@@ -41,7 +41,12 @@
         <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
         Nova conversa <kbd>Ctrl+N</kbd>
       </button>
-      <input class="search" id="conv-search" placeholder="Buscar conversas…" />
+      <div class="search-row">
+        <input class="search" id="conv-search" placeholder="Buscar conversas…" />
+        <button class="icon-btn" id="btn-new-group" title="Novo grupo de conversas" aria-label="Novo grupo de conversas">
+          <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg>
+        </button>
+      </div>
       <nav id="conv-list"></nav>
       <button class="side-foot" id="btn-settings" title="Configurações (Ctrl+,)">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
@@ -323,6 +328,18 @@
         <div class="modal-actions">
           <button class="btn" id="btn-new-cancel">Cancelar</button>
           <button class="btn primary" id="btn-new-ok">Começar conversa</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Diálogo: servidores MCP (/mcp) -->
+    <div class="modal-wrap" id="mcp-modal" hidden>
+      <div class="modal mcp" role="dialog" aria-labelledby="mcp-title">
+        <h2 id="mcp-title">Servidores MCP</h2>
+        <div class="mcp-list" id="mcp-list"></div>
+        <div class="modal-actions">
+          <button class="btn" id="btn-mcp-refresh">Atualizar</button>
+          <button class="btn primary" id="btn-mcp-close">Fechar</button>
         </div>
       </div>
     </div>

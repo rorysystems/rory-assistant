@@ -231,6 +231,7 @@ if (window.pywebview && window.pywebview.api) start();
 async function init() {
   const s = await api().get_state();
   state.convs = s.conversations;
+  state.groups = s.groups || [];
   state.home = s.home;
   state.app = s.app;
   $("#app-name").textContent = s.app.name;
@@ -256,17 +257,102 @@ function upsertConv(c) {
   state.convs.sort((a, b) => (b.updated || "").localeCompare(a.updated || ""));
 }
 
-// conversas visíveis (filtro da busca) agrupadas por pasta, na ordem da conversa mais recente de cada pasta
+// conversas visíveis (filtro da busca) agrupadas por pasta, na ordem da conversa mais recente de cada pasta.
+// `sections`: os grupos do usuário (cliente, produto...) com as pastas dentro, e no fim as pastas sem grupo.
 function convGroups() {
   const q = state.filter.trim().toLowerCase();
   const shown = state.convs.filter((c) => !q || (c.title || "").toLowerCase().includes(q) || (c.path || "").toLowerCase().includes(q));
   const groups = new Map();
+  const userGroups = new Set((state.groups || []).map((g) => g.id));
   for (const c of shown) {
-    const key = (c.path || "").toLowerCase();
-    if (!groups.has(key)) groups.set(key, { path: c.path, items: [] });
+    const gid = userGroups.has(c.group) ? c.group : "";
+    const key = gid + "|" + (c.path || "").toLowerCase();
+    if (!groups.has(key)) groups.set(key, { path: c.path, gid, items: [] });
     groups.get(key).items.push(c);
   }
-  return { shown, groups, q };
+  // árvore de grupos: cada nó tem as pastas dele e os subgrupos; pai inexistente ou ciclo viram raiz
+  const nodes = new Map((state.groups || []).map((g) => [g.id, { group: g, folders: [], children: [], count: 0 }]));
+  for (const f of groups.values()) if (f.gid) nodes.get(f.gid).folders.push(f);
+  const roots = [];
+  for (const node of nodes.values()) {
+    let p = node.group.parent, hops = 0, cyclic = false;
+    while (p && nodes.has(p) && hops++ < 50) { if (p === node.group.id) { cyclic = true; break; } p = nodes.get(p).group.parent; }
+    if (node.group.parent && nodes.has(node.group.parent) && !cyclic && hops < 50) nodes.get(node.group.parent).children.push(node);
+    else roots.push(node);
+  }
+  const prune = (list) => {
+    const kept = [];
+    for (const n of list) {
+      n.children = prune(n.children);
+      n.count = n.folders.reduce((t, f) => t + f.items.length, 0) + n.children.reduce((t, c) => t + c.count, 0);
+      if (!q || n.count) kept.push(n);   // na busca, só os grupos que têm resultado
+    }
+    return kept;
+  };
+  const sections = prune(roots);
+  const loose = [...groups.values()].filter((f) => !f.gid);
+  if (loose.length) sections.push({ group: null, folders: loose, children: [], count: 0 });
+  return { shown, groups, sections, q };
+}
+
+const CHEVRON_SVG = '<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>';
+const DOTS_SVG = '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg>';
+
+function convRow(c) {
+  const row = el("div", "conv" + (c.id === state.active ? " active" : ""));
+  row.dataset.id = c.id;
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  makeDraggable(row, "conv", c.id);
+  const meta = el("div", "meta");
+  meta.append(el("div", "n", c.title || "Nova conversa"), el("div", "t", fmtAgo(c.updated)));
+  row.append(meta);
+  const x = el("button", "icon-btn x"); x.title = "Opções da conversa"; x.setAttribute("aria-label", "Opções da conversa");
+  x.innerHTML = DOTS_SVG;
+  x.onclick = (e) => { e.stopPropagation(); openConvMenu(c.id, x, meta.querySelector(".n")); };
+  row.append(x);
+  setRowIndicator(row, c.id);
+  row.onclick = () => { selectConv(c.id); toggleSidebar(false); };
+  row.onkeydown = (e) => {
+    if (e.target !== row) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectConv(c.id); toggleSidebar(false); }
+  };
+  return row;
+}
+
+function folderHead(f) {
+  const head = el("div", "group");
+  head.innerHTML = FOLDER_SVG;
+  head.append(document.createTextNode(folderName(f.path)));
+  head.title = f.path;
+  return head;
+}
+
+function groupHead(g, count, open) {
+  const head = el("div", "group grp" + (open ? " open" : ""));
+  head.dataset.gid = g.id;
+  head.tabIndex = 0;
+  head.setAttribute("role", "button");
+  head.setAttribute("aria-expanded", String(open));
+  makeDraggable(head, "group", g.id);
+  const chev = el("span", "chev"); chev.innerHTML = CHEVRON_SVG;
+  const name = el("span", "gname", g.name);
+  head.append(chev, name, el("span", "gcount", count ? String(count) : ""));
+  const x = el("button", "icon-btn x"); x.title = "Opções do grupo"; x.setAttribute("aria-label", "Opções do grupo");
+  x.innerHTML = DOTS_SVG;
+  x.onclick = (e) => { e.stopPropagation(); openGroupMenu(g.id, x, name); };
+  head.append(x);
+  const toggle = async () => {
+    const r = await api().collapse_group(g.id, !g.collapsed);
+    state.groups = r.groups;
+    renderConvs();
+  };
+  head.onclick = toggle;
+  head.onkeydown = (e) => {
+    if (e.target !== head) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  };
+  return head;
 }
 
 function renderConvs() {
@@ -277,35 +363,37 @@ function renderConvs() {
   state.convsDirty = false;
   closeConvMenu();
   list.innerHTML = "";
-  const { shown, groups, q } = convGroups();
-  if (!shown.length) list.append(el("div", "group", q ? "Nada encontrado" : "Sem conversas"));
-  for (const g of groups.values()) {
-    const head = el("div", "group");
-    head.innerHTML = FOLDER_SVG;
-    head.append(document.createTextNode(folderName(g.path)));
-    head.title = g.path;
-    list.append(head);
-    for (const c of g.items) {
-      const row = el("div", "conv" + (c.id === state.active ? " active" : ""));
-      row.dataset.id = c.id;
-      row.tabIndex = 0;
-      row.setAttribute("role", "button");
-      const meta = el("div", "meta");
-      meta.append(el("div", "n", c.title || "Nova conversa"), el("div", "t", fmtAgo(c.updated)));
-      row.append(meta);
-      const x = el("button", "icon-btn x"); x.title = "Opções da conversa"; x.setAttribute("aria-label", "Opções da conversa");
-      x.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg>';
-      x.onclick = (e) => { e.stopPropagation(); openConvMenu(c.id, x, meta.querySelector(".n")); };
-      row.append(x);
-      setRowIndicator(row, c.id);
-      row.onclick = () => { selectConv(c.id); toggleSidebar(false); };
-      row.onkeydown = (e) => {
-        if (e.target !== row) return;
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectConv(c.id); toggleSidebar(false); }
-      };
-      list.append(row);
-    }
+  const { shown, sections, q } = convGroups();
+  if (!shown.length && !sections.length) list.append(el("div", "group", q ? "Nada encontrado" : "Sem conversas"));
+  for (const sec of sections) renderNode(sec, list, q);
+}
+
+function renderNode(sec, parentBox, q) {
+  let box = parentBox;
+  if (sec.group) {
+    const open = !sec.group.collapsed || !!q;
+    parentBox.append(groupHead(sec.group, sec.count, open));
+    if (!open) return;
+    box = el("div", "grp-body");
+    box.dataset.gid = sec.group.id;
+    parentBox.append(box);
+    if (!sec.folders.length && !sec.children.length) box.append(el("div", "grp-empty", "Vazio. Arraste conversas para cá."));
   }
+  for (const child of sec.children) renderNode(child, box, q);
+  for (const f of sec.folders) {
+    box.append(folderHead(f));
+    for (const c of f.items) box.append(convRow(c));
+  }
+}
+
+// ids das conversas na ordem em que aparecem na barra lateral (grupos recolhidos não mostram as suas)
+function visibleConvIds() {
+  const { sections, q } = convGroups();
+  const walk = (n) => {
+    if (n.group && n.group.collapsed && !q) return [];
+    return [...n.children.flatMap(walk), ...n.folders.flatMap((f) => f.items.map((c) => c.id))];
+  };
+  return sections.flatMap(walk);
 }
 
 // ⏸ (esperando permissão) ou ponto (trabalhando) da linha, antes do botão ⋮
@@ -321,7 +409,7 @@ function setRowIndicator(row, id) {
 function refreshConvRow(id) {
   const list = $("#conv-list");
   const row = list.querySelector(`.conv[data-id="${CSS.escape(id)}"]`);
-  const want = [...convGroups().groups.values()].flatMap((g) => g.items.map((c) => c.id));
+  const want = visibleConvIds();
   const have = [...list.querySelectorAll(".conv")].map((r) => r.dataset.id);
   const sameOrder = want.length === have.length && want.every((v, i) => v === have[i]);
   if (!sameOrder || (!row && want.includes(id))) {
@@ -479,6 +567,7 @@ async function deleteConv(id) {
   if (!confirm(`Apagar a conversa "${c.title}"?`)) return;
   const s = await api().delete_conversation(id);
   state.convs = s.conversations;
+  state.groups = s.groups || state.groups;
   if (id === state.active || !conv()) await selectConv(s.active);
   else renderConvs();
 }
@@ -512,7 +601,152 @@ function renameConv(id = state.active, name = $("#conv-name")) {
 // Menu ⋮ de cada conversa na barra lateral.
 function closeConvMenu() {
   document.querySelector(".conv-menu")?.remove();
-  document.querySelectorAll(".conv .x.open").forEach((b) => b.classList.remove("open"));
+  document.querySelectorAll(".conv .x.open, .grp .x.open").forEach((b) => b.classList.remove("open"));
+}
+
+/* ---------- grupos de conversas ---------- */
+function applyGroupsState(r) {
+  if (!r || !r.ok) return;
+  state.groups = r.groups;
+  state.convs = r.conversations;
+}
+
+async function newGroup(thenMove = null, parent = null) {
+  if (parent) applyGroupsState(await api().collapse_group(parent, false));   // o subgrupo novo precisa aparecer
+  const r = await api().create_group("Novo grupo", parent);
+  applyGroupsState(r);
+  if (thenMove) applyGroupsState(await api().set_conversation_group(thenMove, r.group.id));
+  renderConvs();
+  const name = $(`#conv-list .grp[data-gid="${CSS.escape(r.group.id)}"] .gname`);
+  if (name) { name.scrollIntoView({ block: "nearest" }); renameGroup(r.group.id, name); }
+}
+
+function renameGroup(id, name) {
+  if (!name || name.isContentEditable) return;
+  name.contentEditable = "true";
+  name.focus();
+  document.getSelection().selectAllChildren(name);
+  name.onclick = (e) => e.stopPropagation();  // clicar no texto não recolhe o grupo
+  const finish = async (save) => {
+    name.contentEditable = "false";
+    name.onkeydown = name.onblur = name.onclick = null;
+    const text = name.textContent.trim();
+    const g = (state.groups || []).find((x) => x.id === id);
+    if (save && g && text && text !== g.name) applyGroupsState(await api().rename_group(id, text));
+    renderConvs();
+  };
+  name.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  };
+  name.onblur = () => finish(true);
+}
+
+async function deleteGroup(id) {
+  const g = (state.groups || []).find((x) => x.id === id);
+  if (!g) return;
+  const n = state.convs.filter((c) => c.group === id).length;
+  const sub = (state.groups || []).filter((x) => x.parent === id).length;
+  const up = g.parent ? "sobem para o grupo pai" : "voltam para a lista, sem grupo";
+  const what = [n && `${n} conversa(s)`, sub && `${sub} subgrupo(s)`].filter(Boolean).join(" e ");
+  const msg = what ? `Apagar o grupo "${g.name}"? ${what} dele continuam e ${up}.` : `Apagar o grupo "${g.name}"?`;
+  if (!confirm(msg)) return;
+  applyGroupsState(await api().delete_group(id));
+  renderConvs();
+}
+
+async function moveGroup(id, parent) {
+  applyGroupsState(await api().move_group(id, parent));
+  renderConvs();
+}
+
+/* Arrastar e soltar: conversa → grupo (ou fora de todos, na lista); grupo → dentro de outro grupo. */
+let dragItem = null;
+
+function makeDraggable(node, type, id) {
+  node.draggable = true;
+  node.addEventListener("dragstart", (e) => {
+    if (node.querySelector('[contenteditable="true"]') || e.target.isContentEditable) { e.preventDefault(); return; }
+    dragItem = { type, id };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", type + ":" + id);   // alguns WebViews exigem algum dado
+    node.classList.add("dragging");
+  });
+  node.addEventListener("dragend", () => { dragItem = null; node.classList.remove("dragging"); clearDropMarks(); });
+}
+
+function clearDropMarks() {
+  document.querySelectorAll(".drop-over").forEach((n) => n.classList.remove("drop-over"));
+}
+
+// o grupo `ancestor` é o próprio `id` ou está dentro dele?
+function groupInside(ancestor, id) {
+  const by = new Map((state.groups || []).map((g) => [g.id, g]));
+  for (let cur = by.get(ancestor), n = 0; cur && n < 50; cur = by.get(cur.parent), n++) if (cur.id === id) return true;
+  return false;
+}
+
+// onde o item caiu: { gid, mark } — gid null = raiz da lista
+function dropTarget(e) {
+  const head = e.target.closest?.(".grp"), body = e.target.closest?.(".grp-body");
+  if (head) return { gid: head.dataset.gid, mark: head };
+  if (body) return { gid: body.dataset.gid, mark: body };
+  return { gid: null, mark: $("#conv-list") };
+}
+
+function bindGroupDrop() {
+  const list = $("#conv-list");
+  list.addEventListener("dragover", (e) => {
+    if (!dragItem) return;
+    const t = dropTarget(e);
+    if (dragItem.type === "group" && t.gid && groupInside(t.gid, dragItem.id)) return;   // não cabe dentro de si mesmo
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (!t.mark.classList.contains("drop-over")) { clearDropMarks(); t.mark.classList.add("drop-over"); }
+  });
+  list.addEventListener("dragleave", (e) => { if (!list.contains(e.relatedTarget)) clearDropMarks(); });
+  list.addEventListener("drop", async (e) => {
+    if (!dragItem) return;
+    e.preventDefault();
+    const item = dragItem, t = dropTarget(e);
+    dragItem = null;
+    clearDropMarks();
+    if (item.type === "conv") await moveConv(item.id, t.gid);
+    else await moveGroup(item.id, t.gid);
+  });
+}
+
+async function moveConv(convId, groupId) {
+  applyGroupsState(await api().set_conversation_group(convId, groupId));
+  renderConvs();
+}
+
+function openGroupMenu(id, button, nameEl) {
+  const already = button.classList.contains("open");
+  closeConvMenu();
+  if (already) return;
+  button.classList.add("open");
+  const menu = el("div", "menu conv-menu");
+  const add = (label, fn, cls) => {
+    const b = el("button", cls || "", label);
+    b.onclick = (e) => { e.stopPropagation(); closeConvMenu(); fn(); };
+    menu.append(b);
+  };
+  add("Renomear grupo", () => renameGroup(id, nameEl));
+  add("Novo subgrupo", () => newGroup(null, id));
+  if ((state.groups || []).find((g) => g.id === id)?.parent) add("Tirar do grupo pai", () => moveGroup(id, null));
+  menu.append(el("hr"));
+  add("Apagar grupo", () => deleteGroup(id), "danger");
+  placeConvMenu(menu, button);
+}
+
+function placeConvMenu(menu, button) {
+  document.body.append(menu);
+  const r = button.getBoundingClientRect();
+  const top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8);
+  menu.style.top = Math.max(8, top) + "px";
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
 }
 
 function openConvMenu(id, button, nameEl) {
@@ -530,12 +764,13 @@ function openConvMenu(id, button, nameEl) {
   add("Abrir pasta", () => api().open_folder(id));
   add("Continuar no terminal", () => api().open_terminal(id));
   menu.append(el("hr"));
+  const cur = conv(id)?.group;
+  for (const g of state.groups || []) if (g.id !== cur) add("Mover para: " + g.name, () => moveConv(id, g.id));
+  add("Mover para um novo grupo…", () => newGroup(id));
+  if (cur && (state.groups || []).some((g) => g.id === cur)) add("Tirar do grupo", () => moveConv(id, null));
+  menu.append(el("hr"));
   add("Apagar conversa", () => deleteConv(id), "danger");
-  document.body.append(menu);
-  const r = button.getBoundingClientRect();
-  const top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8);
-  menu.style.top = Math.max(8, top) + "px";
-  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
+  placeConvMenu(menu, button);
 }
 
 /* ---------- nova conversa (escolher pasta) ---------- */
@@ -557,6 +792,96 @@ async function openNewModal() {
     }
   }
   input.focus(); input.select();
+}
+
+/* /mcp: servidores MCP da conversa (estado, login, reconectar, ativar/desativar). O terminal
+   mostra isso como menu interativo; aqui é uma tela própria, já que o /mcp do SDK é só texto. */
+const MCP_STATUS = { connected: "conectado", failed: "falhou", "needs-auth": "precisa entrar", pending: "conectando…", disabled: "desativado" };
+let mcpWatch = null;
+
+function closeMcp() {
+  $("#mcp-modal").hidden = true;
+  clearInterval(mcpWatch); mcpWatch = null;
+}
+
+async function openMcp() {
+  $("#mcp-modal").hidden = false;
+  await refreshMcp(true);
+}
+
+async function refreshMcp(first = false) {
+  const convId = state.active, box = $("#mcp-list");
+  if (first) box.replaceChildren(el("div", "mcp-empty", "Consultando os servidores…"));
+  const r = await api().mcp_servers(convId);
+  if ($("#mcp-modal").hidden || convId !== state.active) return [];
+  if (!r || !r.ok) { box.replaceChildren(el("div", "mcp-err", "Não consegui consultar: " + ((r && r.error) || "erro"))); return []; }
+  renderMcp(r.servers);
+  return r.servers;
+}
+
+function renderMcp(servers) {
+  const box = $("#mcp-list");
+  if (!servers.length) {
+    box.replaceChildren(el("div", "mcp-empty", "Nenhum servidor MCP configurado nesta pasta. Adicione com `claude mcp add` no terminal ou em um arquivo .mcp.json."));
+    return;
+  }
+  box.replaceChildren(...servers.map((s) => {
+    const card = el("div", "mcp-card");
+    const head = el("div", "mcp-head");
+    head.append(el("span", "mcp-name", s.name), el("span", "mcp-badge " + s.status, MCP_STATUS[s.status] || s.status));
+    card.append(head);
+    const meta = [s.type, s.scope && "escopo: " + s.scope, s.url].filter(Boolean).join("  ·  ");
+    if (meta) card.append(el("div", "mcp-meta", meta));
+    if (s.error) card.append(el("div", "mcp-err", s.error));
+    if (s.tools.length) {
+      const det = el("details");
+      det.append(el("summary", "mcp-meta", `${s.tools.length} ferramenta${s.tools.length > 1 ? "s" : ""}`), el("div", "mcp-tools", s.tools.join("\n")));
+      det.querySelector(".mcp-tools").style.whiteSpace = "pre-wrap";
+      card.append(det);
+    }
+    const acts = el("div", "mcp-actions");
+    const add = (label, action, primary) => {
+      const b = el("button", "btn" + (primary ? " primary" : ""), label);
+      b.onclick = () => mcpAction(s, action, b);
+      acts.append(b);
+    };
+    if (s.status === "disabled") add("Ativar", "enable", true);
+    else {
+      if (s.status === "needs-auth") add("Autenticar", "auth", true);
+      add("Reconectar", "reconnect", s.status === "failed");
+      if (s.status === "connected" && /^(http|sse)$/.test(s.type)) add("Autenticar de novo", "auth");
+      add("Desativar", "disable");
+    }
+    card.append(acts);
+    return card;
+  }));
+}
+
+async function mcpAction(s, action, btn) {
+  const convId = state.active;
+  btn.disabled = true;
+  const r = await api().mcp_action(convId, s.name, action);
+  btn.disabled = false;
+  if (!r || !r.ok) { toast(`${s.name}: ${(r && r.error) || "falhou"}`, "error"); await refreshMcp(); return; }
+  if (action === "auth") {
+    if (!r.auth_url) { toast(`${s.name}: o servidor não devolveu a página de login`, "error"); await refreshMcp(); return; }
+    toast("Abrindo o navegador para entrar. Termine o login lá.");
+    // o Claude Code espera o retorno do login e reconecta sozinho; acompanhamos até conectar
+    clearInterval(mcpWatch);
+    let tries = 0;
+    mcpWatch = setInterval(async () => {
+      tries++;
+      const list = await refreshMcp();
+      const now = list.find((x) => x.name === s.name);
+      if (!now || now.status === "connected" || tries > 40 || $("#mcp-modal").hidden) {
+        clearInterval(mcpWatch); mcpWatch = null;
+        if (now && now.status === "connected") toast(`${s.name}: conectado`);
+      }
+    }, 3000);
+    return;
+  }
+  toast(`${s.name}: ${{ reconnect: "reconectado", enable: "ativado", disable: "desativado" }[action]}`);
+  await refreshMcp();
 }
 
 function closeNewModal() { $("#new-modal").hidden = true; }
@@ -1147,6 +1472,9 @@ const LOCAL_COMMANDS = {
   resume: () => { toggleSidebar(true); $("#conv-search").focus(); },
   permissions: () => { $("#perm-mode").focus(); toast("Escolha o modo de permissões no topo"); },
   terminal: () => api().open_terminal(state.active),
+  mcp: () => openMcp(),
+  rename: (arg) => renameFromCommand(arg),
+  effort: (arg) => setEffortFromCommand(arg),
   exit: () => toast("Para fechar, use o X da janela"),
   quit: () => toast("Para fechar, use o X da janela"),
   model: (arg) => {
@@ -1156,6 +1484,38 @@ const LOCAL_COMMANDS = {
     setMainModel(arg);
   },
 };
+
+/* /rename <nome>: título da conversa na barra lateral (sem nome, edita o título no topo). */
+async function renameFromCommand(arg) {
+  const id = state.active, c = conv(id);
+  if (!c) return;
+  const title = (arg || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!title) { renameConv(); toast("Digite o novo título e Enter"); return; }
+  if (!(await api().rename_conversation(id, title))) { toast("Nome inválido", "error"); return; }
+  c.title = title;
+  renderConvs();
+  renderHeader();
+  toast("Conversa renomeada");
+}
+
+/* /effort <baixo|médio|alto|auto>: a mesma preferência das Configurações (vale a partir da próxima mensagem). */
+const EFFORT_ALIASES = { auto: "", default: "", padrao: "", "padrão": "", low: "low", baixo: "low", medium: "medium", medio: "medium", "médio": "medium", high: "high", alto: "high" };
+const EFFORT_LABELS = { "": "padrão do Claude Code", low: "baixo", medium: "médio", high: "alto" };
+
+async function setEffortFromCommand(arg) {
+  const key = (arg || "").trim().toLowerCase();
+  if (!key) {
+    toast("Esforço atual: " + EFFORT_LABELS[state.prefs?.effort || ""] + ". Use /effort baixo|médio|alto|auto");
+    return;
+  }
+  if (!(key in EFFORT_ALIASES)) { toast("Esforço inválido. Use /effort baixo, médio, alto ou auto", "error"); return; }
+  const np = await api().set_pref("effort", EFFORT_ALIASES[key]);
+  if (np && np.ok === false) return;
+  state.prefs = np;
+  const sel = $("#pref-effort");
+  if (sel) sel.value = np.effort || "";
+  toast("Esforço: " + EFFORT_LABELS[np.effort || ""] + " (vale a partir da próxima mensagem)");
+}
 
 /* Modelos: o principal é por conversa (set_model); o dos subagentes é uma preferência
    global (subagent_model: "auto" = um degrau abaixo do principal). */
@@ -2242,6 +2602,8 @@ function bindUi() {
 
   $("#btn-new").onclick = openNewModal;
   $("#btn-new-side").onclick = openNewModal;
+  $("#btn-new-group").onclick = () => newGroup();
+  bindGroupDrop();
   $("#btn-new-cancel").onclick = closeNewModal;
   $("#btn-new-ok").onclick = createConv;
   $("#new-path").onkeydown = (e) => { if (e.key === "Enter") createConv(); };
@@ -2249,6 +2611,9 @@ function bindUi() {
     const p = await api().pick_folder($("#new-path").value);
     if (p) { $("#new-path").value = p; createConv(); }
   };
+  $("#mcp-modal").onclick = (e) => { if (e.target.id === "mcp-modal") closeMcp(); };
+  $("#btn-mcp-close").onclick = closeMcp;
+  $("#btn-mcp-refresh").onclick = () => refreshMcp(true);
   $("#new-modal").onclick = (e) => { if (e.target.id === "new-modal") closeNewModal(); };
 
   $("#conv-name").onclick = () => renameConv();
@@ -2336,7 +2701,8 @@ function bindUi() {
       if (rec.media) { stopMic(true); return; }
       // cartão do plano aguardando resposta: Esc não o dispensa nem interrompe o turno
       if ($("#new-modal").hidden && $("#settings").hidden && document.querySelector("#messages .plan-card:not(.answered)")) return;
-      if (!$("#new-modal").hidden) closeNewModal();
+      if (!$("#mcp-modal").hidden) closeMcp();
+      else if (!$("#new-modal").hidden) closeNewModal();
       else if (!$("#settings").hidden) closeSettings();
       else if (state.busy[state.active]) api().stop(state.active);
       else if (filesOverlay()) closeFiles();

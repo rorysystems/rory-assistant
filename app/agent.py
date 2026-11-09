@@ -93,8 +93,9 @@ usa o Claude Code por baixo. O usuário é desenvolvedor e conversa com você po
 janela, não por um terminal:
 - Imagens e arquivos que ele cola/anexa chegam como blocos na própria mensagem
   (PDF vem página a página; Office/CSV convertido para markdown).
-- Slash commands interativos do terminal (/login, /config, /mcp etc.) não funcionam
-  aqui; se ele pedir, explique o equivalente ou sugira abrir no terminal.
+- Slash commands interativos do terminal (/login, /config etc.) não funcionam
+  aqui; se ele pedir, explique o equivalente ou sugira abrir no terminal. (O /mcp tem
+  tela própria no app: lista os servidores e permite autenticar, reconectar e ativar/desativar.)
 - Respostas são renderizadas em markdown com destaque de código.
 - Ferramentas que alteram coisas pedem permissão na tela, a não ser que o modo do
   projeto libere.
@@ -539,6 +540,46 @@ class Session:
             key=lambda c: c["name"],
         )
 
+    async def mcp_servers(self) -> list[dict[str, Any]]:
+        """Servidores MCP da pasta da conversa, com estado, URL e ferramentas (para o /mcp)."""
+        client = await self._connect()
+        data = await client.get_mcp_status() or {}
+        out = []
+        for item in data.get("mcpServers") or []:
+            config = item.get("config") or {}
+            out.append(
+                {
+                    "name": str(item.get("name") or ""),
+                    "status": str(item.get("status") or "pending"),
+                    "error": str(item.get("error") or ""),
+                    "scope": str(item.get("scope") or ""),
+                    "type": str(config.get("type") or "stdio"),
+                    "url": str(config.get("url") or config.get("command") or ""),
+                    "tools": [str(t.get("name") or "") for t in item.get("tools") or [] if isinstance(t, dict)],
+                    "server": (item.get("serverInfo") or {}).get("name", ""),
+                }
+            )
+        return out
+
+    async def mcp_action(self, name: str, action: str) -> dict[str, Any]:
+        """reconnect | enable | disable | auth. No `auth` o CLI sobe o servidor local que
+        recebe o retorno do login e devolve a URL para abrir no navegador (quem abre é o app)."""
+        client = await self._connect()
+        if action == "reconnect":
+            await client.reconnect_mcp_server(name)
+        elif action in ("enable", "disable"):
+            await client.toggle_mcp_server(name, action == "enable")
+        elif action == "auth":
+            query = getattr(client, "_query", None)
+            if query is None:
+                raise RuntimeError("A conexão com o Claude Code não está pronta.")
+            reply = await query._send_control_request({"subtype": "mcp_authenticate", "serverName": name})
+            reply = reply or {}
+            return {"auth_url": str(reply.get("authUrl") or ""), "waiting": bool(reply.get("callbackExpected"))}
+        else:
+            raise ValueError(f"ação desconhecida: {action}")
+        return {}
+
     async def disconnect(self) -> None:
         for future in self.permissions.values():
             if not future.done():
@@ -938,6 +979,12 @@ class AgentHub:
 
     def list_commands(self, project_id: str) -> list[dict[str, Any]]:
         return self._run(self.session(project_id).list_commands()).result(timeout=60)
+
+    def mcp_servers(self, project_id: str) -> list[dict[str, Any]]:
+        return self._run(self.session(project_id).mcp_servers()).result(timeout=60)
+
+    def mcp_action(self, project_id: str, name: str, action: str) -> dict[str, Any]:
+        return self._run(self.session(project_id).mcp_action(name, action)).result(timeout=90)
 
     def interrupt(self, project_id: str) -> None:
         self._run(self.session(project_id).interrupt())

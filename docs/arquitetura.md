@@ -34,7 +34,7 @@ Rory Assistant = janela pywebview (HTML/JS) + backend Python que usa o **Claude 
 ## Sessões e conversas
 
 - Cada conversa fica presa a uma pasta (cwd do Claude) e tem seu `session_id`, salvo do `ResultMessage` e usado em `resume=`. Sessão sumida → conecta sem resume. Processo morto → `CLIConnectionError`, reconecta e reenvia uma vez.
-- O índice de todas as conversas fica em `state.json`; a barra lateral agrupa por pasta. Conversa nova numa pasta herda o modo de permissão da última conversa daquela pasta. Conversas vazias são descartadas ao iniciar (menos a ativa). Apagar move o histórico para `history/apagadas/`.
+- O índice de todas as conversas fica em `state.json`; a barra lateral agrupa por pasta. Grupos do usuário: `state.json → groups` (`id`, `name`, `collapsed`, `parent` opcional: aninhamento sem ciclos, checado em `Store.set_group_parent`) e `group` (id) em cada conversa; `Store.add_group/update_group/delete_group/set_conv_group` e `Api.create_group/move_group/rename_group/collapse_group/delete_group/set_conversation_group` (todas devolvem `groups` + `conversations`). No JS, `convGroups()` monta `sections` (árvore: grupo → subgrupos + pastas → conversas; `renderNode` recursivo). Arrastar e soltar: `makeDraggable` + `bindGroupDrop` (delegado no `#conv-list`) e `visibleConvIds()` é a ordem real do DOM (grupos recolhidos não têm linhas). Conversa nova numa pasta herda o modo de permissão da última conversa daquela pasta. Conversas vazias são descartadas ao iniciar (menos a ativa). Apagar move o histórico para `history/apagadas/`.
 - `/clear` (`Api.clear_conversation`): `hub.forget`, zera `session_id`/`ctx_floor`, grava um `divider` (`kind: "clear"`).
 - Várias conversas ao mesmo tempo: a tela só desenha eventos da conversa aberta. Ao voltar para uma conversa ocupada, `set_active` devolve `live_parts` (cópia do `session.parts`) e `permissions` pendentes.
 
@@ -90,7 +90,7 @@ Rory Assistant = janela pywebview (HTML/JS) + backend Python que usa o **Claude 
 
 ## Comandos de tela do terminal
 
-- `/login`, `/logout`, `/usage`, `/cost`, `/status`, `/clear`, `/new`, `/resume`, `/permissions`, `/model`, `/terminal`, `/config` são interceptados por `LOCAL_COMMANDS` (app.js) e abrem o recurso equivalente do app.
+- `/login`, `/logout`, `/usage`, `/cost`, `/status`, `/clear`, `/new`, `/resume`, `/permissions`, `/model`, `/terminal`, `/config`, `/mcp` são interceptados por `LOCAL_COMMANDS` (app.js) e abrem o recurso equivalente do app. O `/mcp` usa `Api.mcp_servers`/`mcp_action` → `Session.mcp_servers`/`mcp_action`: `get_mcp_status`, `reconnect_mcp_server` e `toggle_mcp_server` do SDK e, para o login OAuth, o pedido de controle `mcp_authenticate` enviado por `client._query._send_control_request` (API interna do SDK, não documentada: reconferir ao atualizar o `claude-agent-sdk`). O CLI sobe o servidor local que recebe o retorno do login; o app só abre a `authUrl` e consulta o estado a cada 3 s.
 - Comando "só terminal" não mapeado abre o terminal com `claude --resume <sessão> "/comando"` (`Api.open_terminal`). Comandos novos do Claude Code funcionam sem mexer no app.
 
 ## Configurações e uso

@@ -217,6 +217,7 @@ class Api:
         return {
             "app": {"name": config.APP_NAME, "version": config.APP_VERSION},
             "conversations": convs,
+            "groups": self.store.groups(),
             "active": active,
             "theme": self.store.state.get("theme", "dark"),
             "home": config.HOME,
@@ -396,6 +397,37 @@ class Api:
             return False
         self.store.update(conv_id, title=title)
         return True
+
+    # --- grupos de conversas (barra lateral) ----------------------------------------
+    def _groups_state(self) -> dict[str, Any]:
+        return {"ok": True, "groups": self.store.groups(), "conversations": self.store.conversations()}
+
+    def create_group(self, name: str = "", parent: str | None = None) -> dict[str, Any]:
+        name = " ".join((name or "").split())[:60] or "Novo grupo"
+        group = self.store.add_group(name, parent or None)
+        return {**self._groups_state(), "group": group}
+
+    def rename_group(self, group_id: str, name: str) -> dict[str, Any]:
+        name = " ".join((name or "").split())[:60]
+        if name:
+            self.store.update_group(group_id, name=name)
+        return self._groups_state()
+
+    def collapse_group(self, group_id: str, collapsed: bool) -> dict[str, Any]:
+        self.store.update_group(group_id, collapsed=bool(collapsed))
+        return self._groups_state()
+
+    def delete_group(self, group_id: str) -> dict[str, Any]:
+        self.store.delete_group(group_id)
+        return self._groups_state()
+
+    def move_group(self, group_id: str, parent: str | None) -> dict[str, Any]:
+        self.store.set_group_parent(group_id, parent or None)
+        return self._groups_state()
+
+    def set_conversation_group(self, conv_id: str, group_id: str | None) -> dict[str, Any]:
+        self.store.set_conv_group(conv_id, group_id or None)
+        return self._groups_state()
 
     def delete_conversation(self, conv_id: str) -> dict[str, Any]:
         self.hub.forget(conv_id)
@@ -648,6 +680,24 @@ class Api:
             return {"ok": True, "commands": self.hub.list_commands(conv_id)}
         except Exception as error:  # noqa: BLE001
             return {"ok": False, "error": str(error), "commands": []}
+
+    def mcp_servers(self, conv_id: str) -> dict[str, Any]:
+        """Servidores MCP da conversa (tela do /mcp)."""
+        try:
+            return {"ok": True, "servers": self.hub.mcp_servers(conv_id)}
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "error": str(error), "servers": []}
+
+    def mcp_action(self, conv_id: str, name: str, action: str) -> dict[str, Any]:
+        """reconnect | enable | disable | auth. No auth, abre o navegador no login do servidor."""
+        try:
+            result = self.hub.mcp_action(conv_id, str(name), str(action))
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "error": str(error) or type(error).__name__}
+        url = result.get("auth_url") or ""
+        if url:
+            self.open_url(url)
+        return {"ok": True, **result}
 
     def stop(self, conv_id: str) -> None:
         self.hub.interrupt(conv_id)

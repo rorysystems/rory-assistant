@@ -100,6 +100,7 @@ class Store:
         state = _read_json(config.STATE_FILE, {}, backup=True)
         self.state: dict[str, Any] = state if isinstance(state, dict) else {}
         self.state.setdefault("conversations", [])
+        self.state.setdefault("groups", [])
         self.state.setdefault("theme", "dark")
         self.state.setdefault("active", None)
         self.state.pop("projects", None)  # formato antigo (0.1.0 de teste)
@@ -160,6 +161,9 @@ class Store:
                 "created": stamp,
                 "updated": stamp,
             }
+            group = self._last_group_for(path)
+            if group:
+                conv["group"] = group
             self.state["conversations"].append(conv)
             self.state["active"] = conv["id"]
             self.save()
@@ -180,6 +184,100 @@ class Store:
             if conv and any(k not in conv or conv[k] != v for k, v in fields.items()):
                 conv.update(fields)
                 self.save()
+
+    # --- grupos de conversas (pastas da barra lateral: cliente, produto...) ---------------
+    def groups(self) -> list[dict[str, Any]]:
+        with _lock:
+            return [dict(g) for g in self.state.get("groups") or []]
+
+    def add_group(self, name: str, parent: str | None = None) -> dict[str, Any]:
+        with _lock:
+            groups = self.state.setdefault("groups", [])
+            group = {"id": uuid.uuid4().hex[:8], "name": name, "collapsed": False}
+            if parent and any(g["id"] == parent for g in groups):
+                group["parent"] = parent
+            groups.append(group)
+            self.save()
+            return dict(group)
+
+    def set_group_parent(self, group_id: str, parent: str | None) -> None:
+        """Move o grupo para dentro de outro (ou para a raiz, com None). Recusa ciclos."""
+        with _lock:
+            groups = self.state.get("groups") or []
+            by_id = {g["id"]: g for g in groups}
+            group = by_id.get(group_id)
+            if not group:
+                return
+            if parent:
+                node, seen = by_id.get(parent), set()
+                if not node:
+                    return
+                while node:  # o novo pai não pode ser o próprio grupo nem um descendente dele
+                    if node["id"] == group_id or node["id"] in seen:
+                        return
+                    seen.add(node["id"])
+                    node = by_id.get(node.get("parent"))
+                if group.get("parent") == parent:
+                    return
+                group["parent"] = parent
+            elif "parent" in group:
+                group.pop("parent")
+            else:
+                return
+            self.save()
+
+    def update_group(self, group_id: str, **fields: Any) -> None:
+        with _lock:
+            group = next((g for g in self.state.get("groups") or [] if g["id"] == group_id), None)
+            if group and any(group.get(k) != v for k, v in fields.items()):
+                group.update(fields)
+                self.save()
+
+    def delete_group(self, group_id: str) -> None:
+        """Apaga só o grupo: os subgrupos e as conversas dele sobem para o grupo pai
+        (ou para a raiz, se ele não tinha pai). Nada além do próprio grupo é apagado."""
+        with _lock:
+            groups = self.state.get("groups") or []
+            target = next((g for g in groups if g["id"] == group_id), None)
+            parent = target.get("parent") if target else None
+            self.state["groups"] = [g for g in groups if g["id"] != group_id]
+            for g in self.state["groups"]:
+                if g.get("parent") == group_id:
+                    if parent:
+                        g["parent"] = parent
+                    else:
+                        g.pop("parent")
+            for c in self.state["conversations"]:
+                if c.get("group") == group_id:
+                    if parent:
+                        c["group"] = parent
+                    else:
+                        c.pop("group", None)
+            self.save()
+
+    def set_conv_group(self, conv_id: str, group_id: str | None) -> None:
+        with _lock:
+            conv = self.get(conv_id)
+            if not conv:
+                return
+            if group_id and not any(g["id"] == group_id for g in self.state.get("groups") or []):
+                group_id = None
+            if group_id:
+                conv["group"] = group_id
+            elif "group" in conv:
+                conv.pop("group")
+            else:
+                return
+            self.save()
+
+    def _last_group_for(self, path: str) -> str | None:
+        """Nova conversa numa pasta que já está num grupo entra no mesmo grupo."""
+        key = norm_path(path)
+        valid = {g["id"] for g in self.state.get("groups") or []}
+        for c in self.conversations():
+            if norm_path(c["path"]) == key and c.get("group") in valid:
+                return c["group"]
+        return None
 
     def delete(self, conv_id: str) -> None:
         with _lock:
