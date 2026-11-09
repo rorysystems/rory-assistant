@@ -41,10 +41,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.14" }
-      - name: Dependências do pywebview (GTK/WebKit)
+      - name: Bibliotecas do sistema para o Qt (empacotamento)
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-webkit2-4.1 libgirepository-2.0-dev libcairo2-dev pkg-config
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libasound2t64
       - run: bash packaging/build-linux.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: { name: linux, path: dist/installer/* }

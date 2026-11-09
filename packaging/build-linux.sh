@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Gera dist/installer/RoryAssistant-<versao>-linux-x86_64.tar.gz com install.sh dentro.
-# Precisa no sistema (build e uso): GTK3 + WebKit2GTK (pywebview), ex. no Ubuntu:
-#   sudo apt install python3-gi gir1.2-webkit2-4.1 libgirepository-2.0-dev libcairo2-dev
+# Usa o backend Qt do pywebview (PyQt6 em wheels do pip): nada de GTK/WebKit para compilar.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q -r requirements.txt pyinstaller "pywebview[gtk]"
+.venv/bin/pip install -q -r requirements.txt -r requirements-linux.txt pyinstaller
 VERSION=$(.venv/bin/python -c "from app.config import APP_VERSION; print(APP_VERSION)")
 
 .venv/bin/python scripts/make_icons.py
