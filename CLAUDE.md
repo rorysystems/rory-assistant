@@ -22,7 +22,7 @@ Desktop chat app (pywebview + HTML/JS) for developers, by Rory Systems. It runs 
 - Also check `.venv\Scripts\python.exe -c "import app.main"` after Python changes.
 - **Visual tests are done by the user.** Don't launch test instances or take screenshots unless asked.
 - **Never close the user's running instance** (child of the floating button) and **never click "Sair da conta"**: it kills the session you are running in. Test in a separate instance with `RORY_DATA_DIR=<temp dir>`. Changes only apply after the user reopens the app.
-- **Build installers only when asked** (`packaging\build-windows.ps1`; macOS/Linux only via GitHub Actions).
+- **Build installers only when asked** (`packaging\build-windows.ps1`; Linux only via GitHub Actions; no macOS installer, only `install.sh`).
 - All WinForms/WebView2 access goes inside `form.BeginInvoke(Action(...))` (deadlock otherwise).
 - All markdown rendering goes through DOMPurify; links open in the browser.
 - The app never writes into the project folder.

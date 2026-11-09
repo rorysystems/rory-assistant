@@ -1,6 +1,6 @@
 name: Instaladores
 
-# Gera os instaladores dos 3 sistemas. Rode pela aba Actions ("Run workflow") ou
+# Gera os instaladores do Windows e do Linux (macOS: só pelo comando install.sh). Rode pela aba Actions ("Run workflow") ou
 # criando uma tag v*. Os arquivos ficam nos artefatos da execução (e na Release, se for tag).
 on:
   workflow_dispatch:
@@ -25,16 +25,6 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: { name: windows, path: dist/installer/* }
 
-  macos:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with: { python-version: "3.14" }
-      - run: bash packaging/build-mac.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with: { name: macos, path: dist/installer/* }
-
   linux:
     runs-on: ubuntu-24.04
     steps:
@@ -51,7 +41,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos, linux]
+    needs: [windows, linux]
     runs-on: ubuntu-latest
     permissions: { contents: write }
     steps:

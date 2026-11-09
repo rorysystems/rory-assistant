@@ -16,7 +16,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1   # instala
 
 ## Instaladores
 
-- Windows local: `build-windows.ps1` (PyInstaller + Inno Setup). macOS e Linux: só pelo GitHub Actions (`.github/workflows/build.yml`), manual ou com tag `v*`, que publica na Release.
+- Windows local: `build-windows.ps1` (PyInstaller + Inno Setup). Linux: só pelo GitHub Actions (o job do macOS foi removido: sem runner disponível e o macOS usa só o `install.sh`) (`.github/workflows/build.yml`), manual ou com tag `v*`, que publica na Release.
 - O `.spec` **tira o `claude.exe` embutido** do SDK (~345 MB); nos instaladores o app usa o Claude Code do PATH (`config.find_claude()`); na instalação por comando o embutido fica.
 - `installer.iss` precisa estar em **UTF-8 com BOM**. O AppId fixo `{6E4F2B1C-...}` também é usado pelo botão flutuante para achar `InstallLocation`.
 

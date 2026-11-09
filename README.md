@@ -62,11 +62,10 @@ Remove o app e os atalhos e **pergunta** antes de apagar as conversas e configur
 
 ### Instaladores prontos (opção secundária)
 
-Também há instaladores na página de [Releases](https://github.com/rorysystems/rory-assistant/releases/latest) (Windows, macOS e Linux). Eles **não são assinados**, então os sistemas avisam:
+Também há instaladores na página de [Releases](https://github.com/rorysystems/rory-assistant/releases/latest) (Windows e Linux; no macOS use o comando acima). Eles **não são assinados**, então os sistemas avisam:
 
 - **Windows**: o SmartScreen pode aparecer; clique em **Mais informações → Executar assim mesmo**. Com o Controle Inteligente de Aplicativos ligado, o `.exe` pode ser bloqueado: prefira o comando acima.
-- **macOS**: o Gatekeeper diz que o app "está danificado" ou "não pode ser aberto". Nas versões novas o botão direito → Abrir não basta; rode `xattr -cr "/Applications/Rory Assistant.app"` ou, melhor, use o comando acima.
-- **Linux**: o `.tar.gz` traz um `install.sh` próprio e exige GTK3/WebKit2GTK no sistema.
+- **Linux**: o `.tar.gz` traz um `install.sh` próprio e usa o Qt embutido; se faltar biblioteca do sistema, o app não abre (prefira o comando de instalação, que mostra o `sudo apt install` certo).
 
 ### Problemas comuns
 
