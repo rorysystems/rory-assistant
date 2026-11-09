@@ -1,11 +1,11 @@
-﻿; Instalador Windows do Rory Assistant (Inno Setup 6).
+; Instalador Windows do Rory Assistant (Inno Setup 6).
 ; Gerar:  packaging\build-windows.ps1   (roda o PyInstaller e depois este script)
 ; Instala por usuário, sem pedir admin, em %LOCALAPPDATA%\Programs\Rory Assistant
 ; (o botão flutuante procura o exe lá).
 
 #define AppName "Rory Assistant"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 #define AppExe "Rory Assistant.exe"
 

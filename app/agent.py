@@ -15,6 +15,7 @@ Eventos emitidos (campo `type`), todos com `conv` (id da conversa):
   permission {id, tool, title, summary}   pede Permitir / Negar / Sempre
   permission_done {id}
   plan     {id, plan, mode}               ExitPlanMode: plano inteiro para aprovar
+  question {id, questions}                AskUserQuestion: perguntas com opções (resposta = JSON em `message`)
                                           (resposta: accept_edits | default | deny + texto)
   mode_changed {mode}                     modo de permissão mudou (aprovação do plano ou CLI)
   done     {text, cost, error}            fim do turno
@@ -289,6 +290,8 @@ class Session:
         self.last_active = time.monotonic()
         if tool_name == "ExitPlanMode":
             return await self._ask_plan(tool_input)
+        if tool_name == "AskUserQuestion":
+            return await self._ask_question(tool_input)
         request_id = uuid.uuid4().hex[:10]
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.permissions[request_id] = future
@@ -351,6 +354,33 @@ class Session:
             message=text or "O usuário não aprovou o plano: continue no modo plano e pergunte o que ajustar.",
             interrupt=False,
         )
+
+    async def _ask_question(self, tool_input: dict[str, Any]) -> PermissionResultAllow | PermissionResultDeny:
+        """AskUserQuestion: cartão com as perguntas e opções; a resposta volta ao Claude em
+        `answers` (texto da pergunta -> rótulo escolhido), como no terminal."""
+        questions = tool_input.get("questions") if isinstance(tool_input.get("questions"), list) else []
+        request_id = uuid.uuid4().hex[:10]
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self.permissions[request_id] = future
+        event = {"type": "question", "id": request_id, "questions": questions}
+        self.pending_perms[request_id] = event
+        self.emit(**event)
+        try:
+            answer = await future
+        finally:
+            self.permissions.pop(request_id, None)
+            self.pending_perms.pop(request_id, None)
+            self.emit(type="permission_done", id=request_id)
+        raw = self.perm_messages.pop(request_id, "")
+        if answer != "answer":
+            return PermissionResultDeny(message="O usuário recusou responder as perguntas.", interrupt=False)
+        try:
+            answers = json.loads(raw)
+        except ValueError:
+            answers = {}
+        if not isinstance(answers, dict):
+            answers = {}
+        return PermissionResultAllow(updated_input={**tool_input, "answers": answers})
 
     def _set_mode(self, mode: str) -> None:
         """Grava o modo no store e avisa a tela."""

@@ -28,6 +28,7 @@ O que o usuário vê e faz no Rory Assistant. Detalhes de implementação: [arqu
 - **Linha de status** na resposta: o que o Claude está fazendo e há quanto tempo.
 - **Permissões**: cartão com Permitir / Sempre / Negar e o motivo. Se o Claude está parado esperando, aparece uma barra acima da caixa com "Ver pedido".
 - **Modo de permissões** embaixo da caixa (Shift+Tab alterna): perguntar → aceitar edições → plano → liberar tudo.
+- **Perguntas do Claude**: quando ele pergunta algo (AskUserQuestion), aparece um cartão com as opções (uma ou várias) e um campo "Outro…"; a resposta volta para ele, como no terminal.
 - **Subagentes**: cada um aparece com a tarefa e o andamento.
 
 ## Arquivos do projeto

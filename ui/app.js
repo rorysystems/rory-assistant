@@ -1248,9 +1248,10 @@ function liveText(chunk) {
 }
 
 window.onAgentEvent = (ev) => {
-  if (ev.type === "permission" || ev.type === "plan") (waiting[ev.conv] ||= new Set()).add(ev.id);
+  const askEv = ev.type === "permission" || ev.type === "plan" || ev.type === "question";
+  if (askEv) (waiting[ev.conv] ||= new Set()).add(ev.id);
   if (ev.type === "permission_done") waiting[ev.conv]?.delete(ev.id);
-  if (ev.type === "permission" || ev.type === "plan" || ev.type === "permission_done") { refreshConvRow(ev.conv); if (ev.conv === state.active) updateWaitBar(); }
+  if (askEv || ev.type === "permission_done") { refreshConvRow(ev.conv); if (ev.conv === state.active) updateWaitBar(); }
   if (ev.type === "mode_changed") {
     const c = conv(ev.conv);
     if (c) c.permission_mode = ev.mode;
@@ -1316,9 +1317,10 @@ window.onAgentEvent = (ev) => {
       break;
     }
     case "permission":
+    case "question":
     case "plan": {
       if (!L) startLive();
-      const card = ev.type === "plan" ? planCard(ev) : permissionCard(ev);
+      const card = permissionCard(ev);
       state.live.body.insertBefore(card, state.live.typing);
       scrollBottom(true);
       if (ev.type === "plan") card.focus({ preventScroll: true });
@@ -1326,7 +1328,7 @@ window.onAgentEvent = (ev) => {
     }
     case "permission_done": {
       const card = document.querySelector(`.perm[data-id="${CSS.escape(ev.id)}"]`);
-      if (card) { card.classList.add("answered"); card.querySelectorAll("button, textarea").forEach((b) => (b.disabled = true)); }
+      if (card) { card.classList.add("answered"); card.querySelectorAll("button, textarea, input").forEach((b) => (b.disabled = true)); }
       break;
     }
     case "subtool": {
@@ -1360,7 +1362,7 @@ window.onAgentEvent = (ev) => {
     }
   }
   updateLiveStatus();
-  if (ev.type === "permission" || ev.type === "plan" || ev.type === "permission_done") updateWaitBar();
+  if (askEv || ev.type === "permission_done") updateWaitBar();
 };
 
 /* Cartão do plano (ExitPlanMode): plano em markdown + 3 opções (atalhos 1, 2, 3).
@@ -1423,7 +1425,63 @@ function planShortcut(e) {
   return true;
 }
 
+/* Cartão do AskUserQuestion: uma pergunta por bloco, opções (uma ou várias) e "Outro…". */
+function questionCard(ev) {
+  const card = el("div", "perm question-card");
+  card.dataset.id = ev.id;
+  card.append(el("div", "pt", "❓ " + (ev.questions?.length > 1 ? "Perguntas do Claude" : "Pergunta do Claude")));
+  const convId = ev.conv || state.active;
+  const picks = []; // por pergunta: { q, multi, labels:Set, other:input }
+  for (const q of ev.questions || []) {
+    const box = el("div", "q-block");
+    if (q.header) box.append(el("span", "q-head", q.header));
+    box.append(el("div", "q-text", q.question || ""));
+    const pick = { q: q.question || "", multi: !!q.multiSelect, labels: new Set(), other: null };
+    const list = el("div", "opts");
+    const refresh = () => list.querySelectorAll(".opt").forEach((b) => b.classList.toggle("on", pick.labels.has(b.dataset.label)));
+    for (const o of q.options || []) {
+      const b = el("button", "opt");
+      b.dataset.label = o.label;
+      b.append(el("span", "", o.label));
+      if (o.description) b.append(el("small", "q-desc", o.description));
+      b.onclick = () => {
+        if (pick.multi) { pick.labels.has(o.label) ? pick.labels.delete(o.label) : pick.labels.add(o.label); }
+        else { pick.labels.clear(); pick.labels.add(o.label); pick.other.value = ""; }
+        refresh();
+      };
+      list.append(b);
+    }
+    pick.other = el("input");
+    pick.other.placeholder = "Outro…";
+    pick.other.setAttribute("aria-label", "Outro");
+    pick.other.oninput = () => { if (!pick.multi && pick.other.value) { pick.labels.clear(); refresh(); } };
+    pick.other.onkeydown = (e) => e.stopPropagation();
+    box.append(list, pick.other);
+    card.append(box);
+    picks.push(pick);
+  }
+  const actions = el("div", "actions");
+  const send = el("button", "btn primary", "Responder");
+  send.onclick = () => {
+    const answers = {};
+    for (const p of picks) {
+      const parts = [...p.labels];
+      const other = p.other.value.trim();
+      if (other) parts.push(other);
+      if (parts.length) answers[p.q] = parts.join(", ");
+    }
+    if (!Object.keys(answers).length) { toast("Escolha uma opção ou escreva a resposta"); return; }
+    api().answer_permission(convId, ev.id, "answer", JSON.stringify(answers));
+  };
+  const skip = el("button", "btn", "Não responder");
+  skip.onclick = () => api().answer_permission(convId, ev.id, "deny");
+  actions.append(send, skip);
+  card.append(actions);
+  return card;
+}
+
 function permissionCard(ev) {
+  if (ev.type === "question") return questionCard(ev);
   if (ev.type === "plan" || ev.plan != null || ev.tool === "ExitPlanMode") return planCard(ev);
   const card = el("div", "perm");
   card.dataset.id = ev.id;

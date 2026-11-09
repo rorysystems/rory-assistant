@@ -440,6 +440,17 @@ body.resizing .viewer-body { pointer-events: none; }
 .perm.plan-card .opt:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-3); }
 .perm.plan-card .opt kbd { flex: none; }
 .perm.plan-card .opt:disabled { cursor: default; }
+.perm.question-card { border-color: var(--accent); background: var(--accent-soft); }
+.perm.question-card .q-block { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.perm.question-card .q-head { align-self: flex-start; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--bg-3); color: var(--muted, inherit); }
+.perm.question-card .q-text { font-weight: 600; }
+.perm.question-card .opts { display: flex; flex-direction: column; gap: 6px; }
+.perm.question-card .opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; border: 1px solid var(--line); background: var(--bg-2); border-radius: 8px; padding: 8px 12px; }
+.perm.question-card .opt:hover:not(:disabled), .perm.question-card .opt.on { border-color: var(--accent); background: var(--bg-3); }
+.perm.question-card .opt.on { box-shadow: inset 0 0 0 1px var(--accent); }
+.perm.question-card .q-desc { opacity: .7; }
+.perm.question-card input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: 13px var(--font); outline: 0; }
+.perm.question-card input:focus { border-color: var(--accent); }
 .perm.plan-card .deny-box { display: flex; flex-direction: column; gap: 6px; }
 .perm.plan-card .deny-box textarea { resize: vertical; min-height: 60px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 13px var(--font); outline: 0; }
 .perm.plan-card .deny-box textarea:focus { border-color: var(--accent); }
