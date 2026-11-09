@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rory Assistant</title>
+  <link rel="stylesheet" href="vendor/hl-dark.min.css" id="hl-theme" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Marca Rory Systems (variação 01). Os quadrados vazados usam a cor do fundo do tema. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="rory-g" x1="0" y1="64" x2="64" y2="0" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#2C4A7C"/><stop offset="1" stop-color="#3ED6E0"/>
+      </linearGradient>
+      <symbol id="rory-mark" viewBox="8 14 52 40">
+        <path d="M18,44 L34,24 L50,44" fill="none" stroke="url(#rory-g)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="10" y="36" width="16" height="16" rx="4" fill="var(--mark-hole)" stroke="url(#rory-g)" stroke-width="2.5"/>
+        <rect x="26" y="16" width="16" height="16" rx="4" fill="url(#rory-g)"/>
+        <rect x="42" y="36" width="16" height="16" rx="4" fill="var(--mark-hole)" stroke="url(#rory-g)" stroke-width="2.5"/>
+        <circle cx="42" cy="18" r="3" fill="#4EDCA0"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <div id="app">
+    <!-- Barra lateral: fixa em janela larga, gaveta em janela estreita -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-head">
+        <span class="brand"><svg class="mark"><use href="#rory-mark"/></svg><span id="app-name">Rory Assistant</span></span>
+        <button class="icon-btn theme-btn" id="btn-theme" title="Alternar tema claro / escuro" aria-label="Alternar tema claro / escuro">
+          <svg class="moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>
+          <svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <button class="icon-btn only-narrow" id="btn-side-close" title="Fechar" aria-label="Fechar">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <button class="btn new-conv" id="btn-new-side">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        Nova conversa <kbd>Ctrl+N</kbd>
+      </button>
+      <input class="search" id="conv-search" placeholder="Buscar conversas…" />
+      <nav id="conv-list"></nav>
+      <button class="side-foot" id="btn-settings" title="Configurações (Ctrl+,)">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        <span class="sf-text">
+          <span class="sf-title">Configurações</span>
+          <span class="sf-sub" id="health-line">verificando Claude Code…</span>
+        </span>
+        <span class="sf-dot" id="health-dot"></span>
+      </button>
+    </aside>
+    <div class="scrim" id="scrim" hidden></div>
+
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn only-narrow" id="btn-side" title="Conversas (Ctrl+B)" aria-label="Conversas (Ctrl+B)">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="conv-title">
+          <div class="name" id="conv-name" title="Clique para renomear">Nova conversa</div>
+          <div class="path" id="conv-path"></div>
+        </div>
+        <div class="conv-usage" id="conv-usage" hidden>
+          <div class="ctx"><span id="ctx-label">contexto</span><div class="ctx-bar"><i id="ctx-fill"></i></div></div>
+          <div class="tot" id="tot-label"></div>
+        </div>
+        <button class="icon-btn" id="btn-docs" title="Arquivos da pasta (Ctrl+E)" aria-label="Arquivos da pasta (Ctrl+E)">
+          <svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg><span>Arquivos</span>
+        </button>
+        <button class="icon-btn" id="btn-new" title="Nova conversa (Ctrl+N)" aria-label="Nova conversa (Ctrl+N)">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <div class="menu-wrap">
+          <button class="icon-btn" id="btn-more" title="Mais" aria-label="Mais">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg>
+          </button>
+          <div class="menu" id="menu-more" hidden>
+            <button data-action="rename">Renomear conversa</button>
+            <button data-action="folder">Abrir pasta</button>
+            <button data-action="terminal">Continuar no terminal</button>
+            <button data-action="convert">Converter arquivo para .md</button>
+            <button data-action="health">Configurações</button>
+            <hr />
+            <button data-action="delete" class="danger">Apagar conversa</button>
+          </div>
+        </div>
+      </header>
+
+      <main id="chat">
+        <div id="messages"></div>
+        <div class="empty" id="empty">
+          <svg class="mark big"><use href="#rory-mark"/></svg>
+          <h1>Em que posso ajudar?</h1>
+          <p>Cole um print com <kbd>Ctrl</kbd>+<kbd>V</kbd>, arraste arquivos aqui ou escreva abaixo.</p>
+          <div class="quick">
+            <button data-prompt="Explique a estrutura desta pasta em poucos tópicos.">Explicar esta pasta</button>
+            <button data-prompt="Veja o git status e o diff atual e me diga o que mudou.">O que mudou no git?</button>
+            <button data-prompt="Procure bugs óbvios ou TODOs esquecidos neste projeto.">Caçar bugs e TODOs</button>
+          </div>
+        </div>
+      </main>
+
+      <!-- Configurações: uma <section class="set-group"> por assunto -->
+      <section class="settings" id="settings" hidden>
+        <div class="docs-head">
+          <span>Configurações</span>
+          <button class="icon-btn" id="btn-settings-close" title="Fechar (Esc)" aria-label="Fechar (Esc)">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div class="settings-body">
+          <section class="set-group">
+            <h3>Conta Claude Code</h3>
+            <p class="set-hint">O Rory Assistant usa o Claude Code instalado neste computador e a conta logada nele (assinatura Pro/Max ou conta da Anthropic).</p>
+            <div class="account" id="account">
+              <div class="acc-status" id="acc-status">verificando…</div>
+              <dl class="acc-info" id="acc-info"></dl>
+            </div>
+            <div class="set-actions">
+              <button class="btn primary" id="btn-login">Entrar na conta</button>
+              <button class="btn" id="btn-logout">Sair da conta</button>
+              <button class="btn" id="btn-recheck">Verificar de novo</button>
+            </div>
+            <p class="set-hint" id="login-hint" hidden>Uma janela de terminal abriu para o login (o navegador também deve abrir). Conclua lá; esta tela atualiza sozinha.</p>
+          </section>
+
+          <section class="set-group">
+            <div class="set-title">
+              <h3>Uso do Claude</h3>
+              <button class="btn small" id="btn-usage-refresh">Atualizar</button>
+            </div>
+            <div class="limits" id="limits"><p class="set-hint">carregando…</p></div>
+            <h4>Tokens e quanto custariam na API</h4>
+            <p class="set-hint">Somado dos registros locais do Claude Code (terminal e este app) e multiplicado pelos preços da API por token. Na assinatura você não paga assim; serve para ter noção do volume.</p>
+            <div class="usage-table-wrap"><table class="usage-table" id="usage-table"></table></div>
+            <p class="set-hint" id="usage-models"></p>
+            <p class="set-hint" id="usage-checked"></p>
+          </section>
+
+          <section class="set-group">
+            <h3>Contexto das conversas</h3>
+            <p class="set-hint">Quanto maior o contexto, mais cada mensagem gasta, porque o Claude relê a conversa inteira. Toda conversa tem um <b>piso</b> fixo (instruções do Claude Code, ferramentas, CLAUDE.md, skills: ~30–50 mil tokens) que não some ao compactar. Quando a conversa acumula o valor abaixo além do piso, o app compacta sozinho, em segundo plano, logo depois da resposta (com o cache quente, sai barato). O Claude passa a ler um resumo, e você continua vendo tudo na tela.</p>
+            <div class="pref-row">
+              <label for="pref-compact">Compactar quando a conversa acumular, além do piso</label>
+              <select id="pref-compact" data-pref="auto_compact_at" data-num="1">
+                <option value="40000">40 mil tokens</option>
+                <option value="60000">60 mil tokens (padrão)</option>
+                <option value="100000">100 mil tokens</option>
+                <option value="150000">150 mil tokens</option>
+                <option value="0">Nunca (só quando eu pedir)</option>
+              </select>
+            </div>
+            <div class="pref-row">
+              <label for="pref-connectors">Conectores do claude.ai (Gmail, Drive, Agenda, Atlassian…). Desligado, cada mensagem gasta uns 3–5 mil tokens a menos</label>
+              <input type="checkbox" id="pref-connectors" data-pref="claudeai_connectors" />
+            </div>
+            <div class="pref-row">
+              <label for="pref-main-model">Modelo do agente (da conversa aberta; também <code>/model</code>). Vale a partir da próxima mensagem</label>
+              <select id="pref-main-model"></select>
+            </div>
+            <div class="pref-row">
+              <label for="pref-sub-model">Modelo dos subagentes (<code>/model sub</code>). Automático = um degrau abaixo do principal</label>
+              <select id="pref-sub-model"></select>
+            </div>
+            <div class="pref-row">
+              <label for="pref-effort">Esforço do modelo (baixo gasta menos tokens em conversas simples). Vale a partir da próxima mensagem de cada conversa</label>
+              <select id="pref-effort" data-pref="effort">
+                <option value="">Padrão do Claude Code</option>
+                <option value="low">Baixo</option>
+                <option value="medium">Médio</option>
+                <option value="high">Alto</option>
+              </select>
+            </div>
+            <div class="pref-row">
+              <label for="pref-subagents">Tarefas grandes (revisão de código, mudanças amplas): o Claude coordena subagentes em paralelo</label>
+              <input type="checkbox" id="pref-subagents" data-pref="use_subagents" />
+            </div>
+          </section>
+
+          <section class="set-group">
+            <h3>Mídia e voz</h3>
+            <p class="set-hint">Áudio, vídeo e o microfone são transcritos aqui no PC (motor Whisper, offline): nada sai do computador e não gasta tokens. Só o texto vai para o Claude. O modelo é baixado na primeira vez que for usado.</p>
+            <div class="pref-row">
+              <label for="pref-image">Imagens anexadas</label>
+              <select id="pref-image" data-pref="image_mode">
+                <option value="image">Enviar a imagem (o Claude vê tudo)</option>
+                <option value="ocr">Só o texto lido no PC (economiza tokens)</option>
+                <option value="both">Imagem + texto lido</option>
+              </select>
+            </div>
+            <div class="pref-row">
+              <label for="pref-video-ocr">Vídeos: ler o texto que aparece na tela</label>
+              <input type="checkbox" id="pref-video-ocr" data-pref="video_ocr" />
+            </div>
+            <div class="pref-row">
+              <label for="pref-model">Qualidade da transcrição</label>
+              <select id="pref-model" data-pref="whisper_model">
+                <option value="tiny">Muito rápida (tiny, ~75 MB)</option>
+                <option value="base">Rápida (base, ~150 MB)</option>
+                <option value="small">Equilibrada (small, ~460 MB)</option>
+                <option value="medium">Melhor e lenta (medium, ~1,5 GB)</option>
+              </select>
+            </div>
+            <div class="pref-row">
+              <label for="pref-lang">Idioma falado</label>
+              <select id="pref-lang" data-pref="whisper_language">
+                <option value="pt">Português</option>
+                <option value="en">Inglês</option>
+                <option value="es">Espanhol</option>
+                <option value="auto">Detectar sozinho</option>
+              </select>
+            </div>
+            <div class="pref-row">
+              <label for="pref-autosend">Microfone: enviar direto ao terminar de falar</label>
+              <input type="checkbox" id="pref-autosend" data-pref="voice_autosend" />
+            </div>
+            <p class="set-hint" id="ocr-note" hidden>O OCR do Windows não está disponível neste computador: imagens irão sempre como imagem.</p>
+          </section>
+
+          <section class="set-group">
+            <h3>Sobre</h3>
+            <p class="set-hint" id="about-line"></p>
+            <p class="set-hint">Site: <a href="https://www.rorysystems.com">www.rorysystems.com</a></p>
+          </section>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <div class="wait-bar" id="wait-bar" hidden>
+          <span>⏸</span><span class="wt"></span>
+          <button class="btn" id="btn-wait-go">Ver pedido</button>
+        </div>
+        <div class="shell-chip" id="shell-chip" hidden></div>
+        <div class="chips" id="chips"></div>
+        <div class="slash" id="slash" hidden></div>
+        <div class="input-row">
+          <button class="icon-btn" id="btn-attach" title="Anexar arquivo" aria-label="Anexar arquivo">
+            <svg viewBox="0 0 24 24"><path d="M21 11.5l-8.5 8.5a5 5 0 0 1-7-7L14 4.5a3.5 3.5 0 0 1 5 5L10.5 18a2 2 0 0 1-3-3L15 7.5"/></svg>
+          </button>
+          <textarea id="prompt" rows="1" placeholder="Mensagem… (Enter envia, Shift+Enter quebra linha)"></textarea>
+          <span class="rec-time" id="rec-time" hidden>0:00</span>
+          <button class="icon-btn mic" id="btn-mic" title="Falar (clique para gravar, clique de novo para transcrever)" aria-label="Falar (clique para gravar, clique de novo para transcrever)">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </button>
+          <button class="send" id="btn-send" title="Enviar" aria-label="Enviar">
+            <svg viewBox="0 0 24 24" class="i-send"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            <svg viewBox="0 0 24 24" class="i-stop"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+          </button>
+        </div>
+        <input type="file" id="file-input" multiple hidden />
+        <div class="composer-foot">
+          <label class="mode" title="Modo de permissões desta conversa (Shift+Tab alterna)">
+            <span class="mode-icon" id="mode-icon">●</span>
+            <select id="perm-mode">
+              <option value="default">Perguntar antes de agir</option>
+              <option value="acceptEdits">Aceitar edições</option>
+              <option value="plan">Modo plano</option>
+              <option value="bypassPermissions">Liberar tudo</option>
+            </select>
+          </label>
+          <span class="mode-hint">Shift+Tab alterna</span>
+        </div>
+        <div class="plan-note" id="plan-note" hidden></div>
+      </footer>
+    </div>
+
+    <!-- Explorador de arquivos da pasta da conversa, ao lado do chat (como no VS Code) -->
+    <div class="files-resizer" id="files-resizer" hidden title="Arraste para ajustar"></div>
+    <section class="files" id="files" hidden>
+      <div class="files-head">
+        <button class="icon-btn" id="btn-files-back" title="Voltar à árvore" hidden aria-label="Voltar à árvore">
+          <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <span class="files-title" id="files-title">Arquivos</span>
+        <button class="icon-btn" id="btn-files-refresh" title="Atualizar" aria-label="Atualizar">
+          <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-files-close" title="Fechar (Ctrl+E)" aria-label="Fechar (Ctrl+E)">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="files-body">
+        <nav class="tree" id="tree"></nav>
+        <div class="viewer" id="viewer">
+          <div class="viewer-bar" id="viewer-bar" hidden>
+            <span class="vb-name" id="vb-name"></span>
+            <span class="vb-info" id="vb-info"></span>
+            <button class="btn small" id="vb-toggle" hidden>Ver código</button>
+            <button class="icon-btn" id="vb-mention" title="Citar o caminho na mensagem" aria-label="Citar o caminho na mensagem">
+              <svg viewBox="0 0 24 24"><path d="M16 12a4 4 0 1 1-1.2-2.8M16 8v5a2.5 2.5 0 0 0 5 0v-1a9 9 0 1 0-3.5 7.1"/></svg>
+            </button>
+            <button class="icon-btn" id="vb-copy" title="Copiar conteúdo" aria-label="Copiar conteúdo">
+              <svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>
+            </button>
+            <button class="icon-btn" id="vb-code" title="Abrir no VS Code" hidden aria-label="Abrir no VS Code">
+              <svg viewBox="0 0 24 24"><path d="M17 3l4 2v14l-4 2L7 12zM17 3v18M7 12l-4-3v6z"/></svg>
+            </button>
+            <button class="icon-btn" id="vb-path" title="Copiar caminho / mostrar na pasta" aria-label="Copiar caminho ou mostrar na pasta">
+              <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>
+            </button>
+            <button class="icon-btn" id="vb-open" title="Abrir no programa padrão" aria-label="Abrir no programa padrão">
+              <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+            </button>
+          </div>
+          <div class="viewer-body" id="viewer-body"><div class="hint">Escolha um arquivo na árvore.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Diálogo: nova conversa (escolher a pasta) -->
+    <div class="modal-wrap" id="new-modal" hidden>
+      <div class="modal" role="dialog" aria-labelledby="new-title">
+        <h2 id="new-title">Nova conversa</h2>
+        <label for="new-path">Pasta onde o Claude vai trabalhar</label>
+        <div class="path-row">
+          <input id="new-path" spellcheck="false" />
+          <button class="btn" id="btn-pick">Escolher…</button>
+        </div>
+        <div class="recent" id="recent-folders"></div>
+        <div class="modal-actions">
+          <button class="btn" id="btn-new-cancel">Cancelar</button>
+          <button class="btn primary" id="btn-new-ok">Começar conversa</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dropzone" id="dropzone" hidden><div>Solte para anexar</div></div>
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+  </div>
+
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <script src="vendor/highlight.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

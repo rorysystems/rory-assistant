@@ -1,0 +1,6 @@
+# Só para o Linux (usado por install.sh, além do requirements.txt): backend Qt do pywebview.
+# Vem em wheels do pip, então não precisa de GTK/WebKit do sistema nem de sudo apt para o Python.
+# Faixa em vez de versão exata: no Linux ARM64 as versões novas do Qt ainda não têm wheel.
+qtpy==2.4.3
+PyQt6>=6.7,<7
+PyQt6-WebEngine>=6.7,<7

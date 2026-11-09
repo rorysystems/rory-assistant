@@ -1,0 +1,21 @@
+# Versoes exatas (as testadas em .venv, Python 3.14). Para atualizar: instale, teste e
+# copie `pip list`. Dependencias indiretas ficam a cargo do pip.
+claude-agent-sdk==0.2.179
+pywebview==6.2.1
+markitdown[docx,pptx,xlsx,xls]==0.1.9
+pypdf==7.0.0
+pypdfium2==5.15.0
+pillow==13.0.0
+platformdirs==4.14.5
+faster-whisper==1.2.1
+av==16.1.0
+# Smart App Control blocks pydantic_core 2.50.x (_pydantic_core.pyd, no reputation yet). See docs/desenvolvimento.md.
+pydantic==2.13.5
+pydantic-core==2.46.5
+winrt-runtime==4.1.0; sys_platform == "win32"
+winrt-Windows.Media.Ocr==4!10.0.28000.2957; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging==4!10.0.28000.2957; sys_platform == "win32"
+winrt-Windows.Storage.Streams==4!10.0.28000.2957; sys_platform == "win32"
+winrt-Windows.Globalization==4!10.0.28000.2957; sys_platform == "win32"
+winrt-Windows.Foundation==4!10.0.28000.2957; sys_platform == "win32"
+winrt-Windows.Foundation.Collections==4!10.0.28000.2957; sys_platform == "win32"
