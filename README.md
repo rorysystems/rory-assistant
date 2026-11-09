@@ -151,7 +151,7 @@ python -m venv .venv
 ## Gerar os instaladores (para mantenedores)
 
 - **Windows**: `powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1`. O instalador vai para `dist\installer`. Precisa do Inno Setup.
-- **Todos os sistemas**: crie uma tag `v*` (ex.: `git tag v1.0.0 && git push --tags`). O GitHub Actions gera os três instaladores e publica na Release.
+- **Release**: crie uma tag `v*` (ex.: `git tag v1.1.0 && git push --tags`). O GitHub Actions gera os instaladores do Windows e do Linux e publica na Release. O macOS não tem instalador: usa só o `install.sh`.
 
 ---
 
