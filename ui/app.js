@@ -862,6 +862,7 @@ async function mcpAction(s, action, btn) {
   btn.disabled = true;
   const r = await api().mcp_action(convId, s.name, action);
   btn.disabled = false;
+  delete state.commands[convId]; // os prompts do servidor mudam a lista de /comandos
   if (!r || !r.ok) { toast(`${s.name}: ${(r && r.error) || "falhou"}`, "error"); await refreshMcp(); return; }
   if (action === "auth") {
     if (!r.auth_url) { toast(`${s.name}: o servidor não devolveu a página de login`, "error"); await refreshMcp(); return; }
@@ -1261,6 +1262,9 @@ window.onAgentEvent = (ev) => {
   if (ev.type === "status") {
     state.busy[ev.conv] = ev.busy;
     if (!ev.busy) {
+      // turno acabou: a lista de /comandos pode ter ganho os prompts de servidores MCP
+      // que terminaram de conectar durante o turno
+      if (state.commands[ev.conv] !== "loading") delete state.commands[ev.conv];
       // turno acabou: nenhum pedido continua valendo
       waiting[ev.conv] = new Set();
       if (ev.conv === state.active) {

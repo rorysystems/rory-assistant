@@ -10,7 +10,7 @@ from platformdirs import user_data_path
 
 APP_NAME = "Rory Assistant"
 APP_ID = "rory-assistant"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 # Título da janela: o botão flutuante (claude-tray.ps1) procura a janela por ele.
 WINDOW_TITLE = APP_NAME
