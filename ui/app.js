@@ -103,6 +103,8 @@ const state = {
   commandsRetry: {}, // convId -> quando tentar listar os /comandos de novo (após falha)
   convsDirty: false, // a barra lateral precisa ser redesenhada quando o menu ⋮ fechar
   history: {},       // convId -> { start, total }: parte do histórico ainda não carregada
+  queues: {},        // convId -> mensagens na fila [{id, text}] (vão quando o turno termina)
+  msgHits: null,     // busca no conteúdo: { q, hits }
 };
 
 /* ---------- utilidades ---------- */
@@ -364,8 +366,10 @@ function renderConvs() {
   closeConvMenu();
   list.innerHTML = "";
   const { shown, sections, q } = convGroups();
-  if (!shown.length && !sections.length) list.append(el("div", "group", q ? "Nada encontrado" : "Sem conversas"));
+  const hits = q && state.msgHits && state.msgHits.q.toLowerCase() === q ? state.msgHits.hits : [];
+  if (!shown.length && !sections.length) list.append(el("div", "group", q ? (hits.length ? "Nenhum título com esse texto" : "Nada encontrado") : "Sem conversas"));
   for (const sec of sections) renderNode(sec, list, q);
+  if (hits.length) renderMsgHits(list, hits, state.msgHits.q);
 }
 
 function renderNode(sec, parentBox, q) {
@@ -452,6 +456,7 @@ async function selectConv(id) {
   state.busy[id] = r.busy;
   compacting[id] = !!r.compacting;
   state.history[id] = { start: r.history_start || 0, total: r.history_total ?? (r.history || []).length };
+  state.queues[id] = r.queue || [];
   renderHistory(r.history || [], id);
   setShellChip(r.shell_ctx);
   setBusyUi();
@@ -763,6 +768,8 @@ function openConvMenu(id, button, nameEl) {
   add("Renomear", () => renameConv(id, nameEl));
   add("Abrir pasta", () => api().open_folder(id));
   add("Continuar no terminal", () => api().open_terminal(id));
+  add("Exportar (.md)", () => exportConv(id, "md"));
+  add("Exportar (.html)", () => exportConv(id, "html"));
   menu.append(el("hr"));
   const cur = conv(id)?.group;
   for (const g of state.groups || []) if (g.id !== cur) add("Mover para: " + g.name, () => moveConv(id, g.id));
@@ -916,7 +923,7 @@ function loadPrevButton(convId) {
     const box = $("#messages"), chat = $("#chat");
     const prevH = chat.scrollHeight, prevTop = chat.scrollTop;
     const frag = document.createDocumentFragment();
-    for (const m of items) frag.append(histNode(m));
+    items.forEach((m, i) => { const n = histNode(m); n.dataset.idx = newStart + i; frag.append(n); });
     b.remove();
     const nb = loadPrevButton(convId);
     if (nb) frag.prepend(nb);
@@ -936,7 +943,8 @@ function renderHistory(items, convId = state.active) {
   box.innerHTML = "";
   const more = loadPrevButton(convId);
   if (more) box.append(more);
-  for (const m of items) box.append(histNode(m));
+  const base = state.history[convId]?.start || 0;
+  items.forEach((m, i) => { const n = histNode(m); n.dataset.idx = base + i; box.append(n); });
   $("#empty").hidden = items.length > 0 || (state.history[convId]?.start || 0) > 0;
   scrollBottom(true);
 }
@@ -974,7 +982,11 @@ function shellEl(m, liveConv = null) {
   return box;
 }
 
+/* comandos "!" que apagam/formatam coisas: pede confirmação antes de rodar */
+const DANGEROUS_SHELL = /(^|[\s;&|(])(rm\s+(-\w*[rf]\w*|--recursive|--force)|rmdir\s+\/s|rd\s+\/s|del\s+(\/[sfq]|-recurse)|remove-item\b[^\n]*-recurse|format(-volume)?\s+[a-z]:|mkfs\b|dd\s+if=|git\s+(reset\s+--hard|clean\s+-\w*f)|shutdown\b|diskpart\b)/i;
+
 async function runShell(command) {
+  if (DANGEROUS_SHELL.test(command) && !confirm(`Este comando pode apagar ou alterar muita coisa:\n\n${command}\n\nRodar mesmo assim?`)) return;
   const convId = state.active;
   const tmp = shellEl({ command, time: new Date().toISOString() }, convId);
   if (state.live) state.live.wrap.before(tmp); else $("#messages").append(tmp);
@@ -1250,9 +1262,30 @@ function liveText(chunk) {
 
 window.onAgentEvent = (ev) => {
   const askEv = ev.type === "permission" || ev.type === "plan" || ev.type === "question";
-  if (askEv) (waiting[ev.conv] ||= new Set()).add(ev.id);
+  if (askEv) { (waiting[ev.conv] ||= new Set()).add(ev.id); notifyConv(ev.conv, ev.type === "permission" ? "ask" : ev.type); }
+  if (ev.type === "done") lastTurnError[ev.conv] = !!ev.error;
+  if (ev.type === "focus_conv") { if (ev.conv !== state.active) selectConv(ev.conv); return; }
+  if (ev.type === "queue") {
+    state.queues[ev.conv] = ev.queue || [];
+    if (ev.conv === state.active) renderQueue();
+    return;
+  }
+  if (ev.type === "queued_sent") {
+    if (ev.conv === state.active) {
+      freezeLive();
+      $("#messages").append(userMsg(ev.entry));
+      $("#empty").hidden = true;
+      startLive();
+      scrollBottom(true);
+    }
+    return;
+  }
   if (ev.type === "permission_done") waiting[ev.conv]?.delete(ev.id);
   if (askEv || ev.type === "permission_done") { refreshConvRow(ev.conv); if (ev.conv === state.active) updateWaitBar(); }
+  if (ev.type === "notice") {
+    if (ev.conv === state.active) toast(ev.text, "");
+    return;
+  }
   if (ev.type === "mode_changed") {
     const c = conv(ev.conv);
     if (c) c.permission_mode = ev.mode;
@@ -1261,6 +1294,7 @@ window.onAgentEvent = (ev) => {
   }
   if (ev.type === "status") {
     state.busy[ev.conv] = ev.busy;
+    if (ev.busy) clearTimeout(notifyTimers[ev.conv]); else scheduleDoneNotify(ev.conv);
     if (!ev.busy) {
       // turno acabou: a lista de /comandos pode ter ganho os prompts de servidores MCP
       // que terminaram de conectar durante o turno
@@ -1515,7 +1549,8 @@ function setBusyUi() {
   const hasContent = $("#prompt").value.trim() || state.pending.length;
   const stopMode = busy && !hasContent;
   $("#app").classList.toggle("busy", stopMode);
-  $("#btn-send").title = stopMode ? "Parar (Esc ou Ctrl+C)" : busy ? "Enviar para a fila" : "Enviar";
+  $("#btn-send").title = stopMode ? "Parar (Esc ou Ctrl+C)" : busy ? "Enviar agora (Ctrl+Enter: deixar na fila para quando o Claude terminar)" : "Enviar";
+  renderQueue();
 }
 
 /* ---------- envio ---------- */
@@ -1681,7 +1716,7 @@ function runLocalCommand(text) {
 }
 
 function stopTurn() {
-  if (state.busy[state.active]) { api().stop(state.active); toast("Parando…"); }
+  if (state.busy[state.active]) { stoppedByUser[state.active] = true; api().stop(state.active); toast("Parando…"); }
 }
 
 async function send(textOverride) {
@@ -2615,6 +2650,275 @@ function autoGrow() {
   t.style.height = Math.min(t.scrollHeight, 220) + "px";
 }
 
+/* ---------- avisos do sistema (janela em segundo plano) ---------- */
+const notifyTimers = {};
+const stoppedByUser = {};
+const lastTurnError = {};
+const NOTIFY_WHAT = { done: "terminou", error: "terminou com erro", ask: "está esperando sua permissão", question: "tem uma pergunta", plan: "tem um plano para revisar" };
+
+function notifyConv(id, kind) {
+  if (state.prefs && state.prefs.notify === false) return;
+  const focused = document.hasFocus();
+  if (focused && id === state.active) return;
+  if (focused) {
+    const c = conv(id);
+    toast(`“${(c && c.title) || "Conversa"}” ${NOTIFY_WHAT[kind] || "atualizou"}`, kind === "error" ? "error" : "");
+    return;
+  }
+  api().notify(id, kind);
+}
+
+// turno acabou: espera um pouco (a fila pode mandar a próxima logo em seguida)
+function scheduleDoneNotify(id) {
+  clearTimeout(notifyTimers[id]);
+  if (stoppedByUser[id]) { delete stoppedByUser[id]; return; }
+  notifyTimers[id] = setTimeout(() => {
+    if (state.busy[id]) return;
+    notifyConv(id, lastTurnError[id] ? "error" : "done");
+  }, 1500);
+}
+
+/* ---------- fila de mensagens (Ctrl+Enter com o Claude trabalhando) ---------- */
+function renderQueue() {
+  const bar = $("#queue-bar");
+  const id = state.active;
+  const items = state.queues[id] || [];
+  bar.innerHTML = "";
+  bar.hidden = !items.length;
+  if (!items.length) return;
+  const busy = !!state.busy[id];
+  const head = el("div", "qb-head");
+  head.append(el("span", "", busy
+    ? `Na fila (${items.length}): vão uma a uma quando o Claude terminar`
+    : `Fila parada (${items.length}): o turno foi parado, deu erro ou o app foi reaberto`));
+  if (!busy) {
+    const go = el("button", "btn small", "Enviar fila");
+    go.onclick = async () => { go.disabled = true; await api().queue_resume(id); };
+    head.append(go);
+  }
+  bar.append(head);
+  items.forEach((it, i) => {
+    const row = el("div", "qb-item");
+    const t = el("span", "qb-text", it.text); t.title = it.text;
+    const rm = el("button", "rm", "×"); rm.title = "Tirar da fila"; rm.setAttribute("aria-label", "Tirar da fila");
+    rm.onclick = async () => {
+      const r = await api().queue_remove(id, it.id);
+      state.queues[id] = r.queue || [];
+      if (id === state.active) renderQueue();
+    };
+    row.append(el("span", "qb-n", `${i + 1}.`), t, rm);
+    bar.append(row);
+  });
+}
+
+async function enqueue() {
+  const input = $("#prompt");
+  const text = input.value.trim();
+  const id = state.active;
+  if (!text) return;
+  if (state.pending.length) { toast("A fila leva só texto: envie os anexos agora ou tire-os.", "error"); return; }
+  if (text.startsWith("!")) { toast("Comandos ! não entram na fila.", "error"); return; }
+  input.value = ""; autoGrow();
+  const r = await api().queue_add(id, text);
+  if (!r.ok) { toast(r.error, "error"); input.value = text; autoGrow(); return; }
+  state.queues[id] = r.queue || [];
+  state.recall.push(text); state.recallPos = -1;
+  if (id === state.active) setBusyUi();
+  toast("Na fila: vai quando o Claude terminar");
+}
+
+/* ---------- busca no conteúdo das conversas ---------- */
+let msgSearchTimer = 0, msgSearchSeq = 0;
+function scheduleMsgSearch() {
+  clearTimeout(msgSearchTimer);
+  const q = state.filter.trim();
+  if (q.length < 3) { if (state.msgHits) { state.msgHits = null; renderConvs(); } return; }
+  msgSearchTimer = setTimeout(async () => {
+    const seq = ++msgSearchSeq;
+    const r = await api().search_messages(q);
+    if (seq !== msgSearchSeq || state.filter.trim() !== q) return;
+    state.msgHits = { q, hits: (r && r.hits) || [] };
+    renderConvs();
+  }, 300);
+}
+
+function markText(node, text, q) {
+  const lo = text.toLowerCase(), ql = q.toLowerCase();
+  let i = 0, j;
+  while (ql && (j = lo.indexOf(ql, i)) >= 0) {
+    node.append(text.slice(i, j), el("mark", "", text.slice(j, j + q.length)));
+    i = j + q.length;
+  }
+  node.append(text.slice(i));
+}
+
+const HIT_ROLE = { user: "Você", assistant: "Claude", shell: "Comando" };
+function renderMsgHits(list, hits, q) {
+  list.append(el("div", "group msg-hits-title", `Nas mensagens (${hits.length})`));
+  for (const h of hits) {
+    const b = el("button", "msg-hit");
+    b.append(el("div", "mh-title", `${h.title} · ${HIT_ROLE[h.role] || ""} · ${fmtAgo(h.time)}`));
+    const snip = el("div", "mh-snip");
+    markText(snip, h.snippet || "", q);
+    b.append(snip);
+    b.onclick = () => openHit(h);
+    list.append(b);
+  }
+}
+
+async function openHit(h) {
+  if (!isWide()) toggleSidebar(false);
+  if (state.active !== h.conv) await selectConv(h.conv);
+  let rerendered = false;
+  for (let guard = 0; guard < 60; guard++) {
+    if (state.active !== h.conv) return;
+    const node = document.querySelector(`#messages [data-idx="${h.index}"]`);
+    if (node) {
+      node.scrollIntoView({ block: "center" });
+      node.classList.add("flash-hit");
+      setTimeout(() => node.classList.remove("flash-hit"), 1800);
+      return;
+    }
+    const b = $("#load-prev");
+    if (b && (state.history[h.conv]?.start || 0) > h.index) { await b.onclick(); continue; }
+    if (rerendered) break;
+    rerendered = true;  // a mensagem chegou depois que a conversa foi aberta: redesenha
+    await selectConv(h.conv);
+  }
+  toast("Não achei a mensagem na tela.", "error");
+}
+
+/* ---------- exportar conversa ---------- */
+const EXPORT_CSS = "body{margin:0;background:#f7f6f2;color:#1d2230;font:15px/1.6 system-ui,'Segoe UI',sans-serif}main{max-width:860px;margin:0 auto;padding:32px 24px}h1{font-size:24px}h3{margin:28px 0 6px;font-size:15px;color:#2a7f9e}pre{background:#0f1218;color:#e6e6e6;padding:12px;border-radius:8px;overflow:auto;font:13px/1.45 Consolas,monospace}code{font-family:Consolas,monospace}:not(pre)>code{background:#e9e6dc;padding:1px 4px;border-radius:4px}blockquote{margin:6px 0;padding:2px 12px;border-left:3px solid #dcd7cb;color:#5b6272}hr{border:0;border-top:1px solid #dcd7cb;margin:24px 0}table{border-collapse:collapse}td,th{border:1px solid #dcd7cb;padding:4px 8px}img{max-width:100%}";
+
+async function exportConv(id, fmt) {
+  if (!id) return;
+  const r = await api().export_markdown(id, true);
+  if (!r || !r.ok) { toast((r && r.error) || "Não consegui exportar", "error"); return; }
+  let content = r.markdown, name = r.filename + ".md";
+  if (fmt === "html") {
+    const body = DOMPurify.sanitize(marked.parse(r.markdown), { FORBID_TAGS: ["style", "form", "input"], FORBID_ATTR: ["style"] });
+    const title = r.filename.replace(/&/g, "&amp;");
+    content = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${title}</title><style>${EXPORT_CSS}</style></head><body><main>${body}</main></body></html>`;
+    name = r.filename + ".html";
+  }
+  const s = await api().save_export(name, content);
+  if (s && s.ok) toast("Exportado: " + s.path);
+  else if (s && !s.cancelled) toast(s.error || "Não consegui salvar", "error");
+}
+
+/* ---------- painel "Mudanças" (git da pasta da conversa) ---------- */
+const changes = { files: [], sel: null, conv: null, seq: 0 };
+
+async function openChanges() {
+  if (!state.active) return;
+  $("#changes-modal").hidden = false;
+  await refreshChanges();
+}
+function closeChanges() { $("#changes-modal").hidden = true; }
+
+function showDiffHint(msg) {
+  $("#changes-bar").hidden = true;
+  const d = $("#changes-diff");
+  d.innerHTML = "";
+  d.append(el("span", "hint", msg));
+}
+
+async function refreshChanges() {
+  const id = state.active;
+  const seq = ++changes.seq;
+  changes.conv = id;
+  const list = $("#changes-list");
+  list.innerHTML = "";
+  list.append(el("div", "ch-empty", "carregando…"));
+  const r = await api().git_changes(id);
+  if (seq !== changes.seq) return;
+  list.innerHTML = "";
+  changes.files = (r && r.files) || [];
+  if (!r || !r.ok) {
+    $("#changes-branch").textContent = "";
+    list.append(el("div", "ch-empty", (r && r.error) || "Não consegui ler o git."));
+    showDiffHint("Sem git nesta pasta.");
+    return;
+  }
+  $("#changes-branch").textContent = `${r.branch} · ${r.root}`;
+  $("#changes-branch").title = r.root;
+  if (!changes.files.length) {
+    list.append(el("div", "ch-empty", "Nada mudou desde o último commit."));
+    showDiffHint("Sem mudanças.");
+    return;
+  }
+  for (const f of changes.files) {
+    const row = el("button", "ch-row");
+    row.dataset.path = f.path;
+    row.title = `${f.label}: ${f.orig ? f.orig + " → " : ""}${f.path}`;
+    row.append(el("span", "ch-code " + (f.code === "?" ? "q" : f.code), f.code === "?" ? "+" : f.code));
+    row.append(el("span", "ch-path", f.path));
+    const st = el("span", "ch-st");
+    if (f.add) st.append(el("span", "a", `+${f.add}`));
+    if (f.add && f.del) st.append(" ");
+    if (f.del) st.append(el("span", "d", `−${f.del}`));
+    row.append(st);
+    if (f.staged && f.y === " ") { const ok = el("span", "ch-ok", "✓"); ok.title = "Revisado (no git add)"; row.append(ok); }
+    row.onclick = () => selectChange(f);
+    list.append(row);
+  }
+  const keep = changes.sel && changes.files.find((f) => f.path === changes.sel.path);
+  selectChange(keep || changes.files[0]);
+}
+
+async function selectChange(f) {
+  changes.sel = f;
+  document.querySelectorAll(".ch-row").forEach((r) => r.classList.toggle("sel", r.dataset.path === f.path));
+  showDiffHint("carregando…");
+  $("#changes-bar").hidden = false;
+  $("#cb-name").textContent = f.orig ? `${f.orig} → ${f.path}` : f.path;
+  $("#cb-name").title = $("#cb-name").textContent;
+  $("#cb-stage").disabled = f.staged && f.y === " ";
+  const r = await api().git_diff(changes.conv, f.path);
+  if (changes.sel !== f) return;
+  renderDiff(r && r.ok ? r.diff + (r.cut ? "\n[…diff cortado…]" : "") : (r && r.error) || "Não consegui ler o diff.");
+}
+
+const DIFF_META = /^(diff |index |new file|deleted file|similarity|rename |old mode|new mode|--- |\+\+\+ )/;
+function renderDiff(text) {
+  const d = $("#changes-diff");
+  d.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  for (const line of text.split("\n")) {
+    const kind = DIFF_META.test(line) ? "meta" : line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "";
+    frag.append(el("span", "ln " + kind, line || " "));
+  }
+  d.append(frag);
+  d.scrollTop = 0;
+}
+
+async function stageChange() {
+  const f = changes.sel;
+  if (!f) return;
+  const r = await api().git_stage(changes.conv, f.path, f.orig || "");
+  if (!r.ok) { toast(r.error, "error"); return; }
+  toast("Marcado como revisado (git add)");
+  refreshChanges();
+}
+
+async function revertChange() {
+  const f = changes.sel;
+  if (!f) return;
+  const isNew = f.untracked || f.x === "A";
+  const busyNote = state.busy[changes.conv] ? "\n\nAtenção: o Claude ainda está trabalhando nesta conversa." : "";
+  const msg = isNew
+    ? `Tirar o arquivo novo “${f.path}” do projeto?\n\nUma cópia fica na pasta de dados do app (revertidos).${busyNote}`
+    : `Voltar “${f.path}” ao último commit?\n\nAs mudanças dele saem do projeto; uma cópia do arquivo atual fica na pasta de dados do app (revertidos).${busyNote}`;
+  if (!confirm(msg)) return;
+  const r = await api().git_revert(changes.conv, f.path, f.orig || "");
+  if (!r.ok) { toast(r.error, "error"); return; }
+  toast("Revertido");
+  changes.sel = null;
+  refreshChanges();
+  refreshFiles(true);
+}
+
 function bindUi() {
   const input = $("#prompt");
   input.addEventListener("keydown", (e) => {
@@ -2635,6 +2939,7 @@ function bindUi() {
     // Shift+Tab só com o foco na caixa de mensagem: alterna o modo (no resto da tela,
     // continua sendo o Shift+Tab normal de navegação)
     if (e.key === "Tab" && e.shiftKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); cycleMode(); return; }
+    if (e.key === "Enter" && e.ctrlKey && !e.shiftKey && state.busy[state.active]) { e.preventDefault(); closeSlash(); enqueue(); return; }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); closeSlash(); send(); return; }
     // ↑ na primeira linha / ↓ na última: mensagens enviadas antes
     if (e.key === "ArrowUp" && !e.shiftKey && caretOnFirstLine(input) && (input.value === "" || state.recallPos !== -1 || input.selectionStart === 0)) {
@@ -2660,7 +2965,7 @@ function bindUi() {
   $("#btn-side-close").onclick = () => toggleSidebar(false);
   $("#scrim").onclick = () => toggleSidebar(false);
   window.addEventListener("resize", () => { if (isWide()) toggleSidebar(false); });
-  $("#conv-search").oninput = (e) => { state.filter = e.target.value; renderConvs(); };
+  $("#conv-search").oninput = (e) => { state.filter = e.target.value; renderConvs(); scheduleMsgSearch(); };
 
   $("#btn-new").onclick = openNewModal;
   $("#btn-new-side").onclick = openNewModal;
@@ -2692,6 +2997,7 @@ function bindUi() {
   $("#btn-login").onclick = startLogin;
   $("#btn-logout").onclick = logout;
   $("#btn-recheck").onclick = () => checkHealth(true);
+  $("#btn-logs").onclick = () => api().open_logs();
   $("#btn-usage-refresh").onclick = loadUsage;
   $("#btn-mic").onclick = toggleMic;
   $("#conv-usage").onclick = () => {
@@ -2705,6 +3011,12 @@ function bindUi() {
   $("#perm-mode").onchange = (e) => applyMode(e.target.value);
 
   bindFiles();
+  $("#btn-changes").onclick = openChanges;
+  $("#btn-changes-close").onclick = closeChanges;
+  $("#btn-changes-refresh").onclick = () => refreshChanges();
+  $("#cb-stage").onclick = stageChange;
+  $("#cb-revert").onclick = revertChange;
+  $("#changes-modal").onclick = (e) => { if (e.target.id === "changes-modal") closeChanges(); };
 
   const menu = $("#menu-more");
   $("#btn-more").onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
@@ -2718,6 +3030,8 @@ function bindUi() {
     if (action === "folder") api().open_folder(state.active);
     if (action === "terminal") api().open_terminal(state.active);
     if (action === "health") openSettings();
+    if (action === "export-md") exportConv(state.active, "md");
+    if (action === "export-html") exportConv(state.active, "html");
     if (action === "convert") {
       const r = await api().convert_file(state.active);
       if (!r) return;
@@ -2761,6 +3075,7 @@ function bindUi() {
       if (document.querySelector(".conv-menu")) { dismissConvMenu(); return; }
       if (!$("#menu-more").hidden) { $("#menu-more").hidden = true; return; }
       if (rec.media) { stopMic(true); return; }
+      if (!$("#changes-modal").hidden) { closeChanges(); return; }
       // cartão do plano aguardando resposta: Esc não o dispensa nem interrompe o turno
       if ($("#new-modal").hidden && $("#settings").hidden && document.querySelector("#messages .plan-card:not(.answered)")) return;
       if (!$("#mcp-modal").hidden) closeMcp();
@@ -2771,6 +3086,7 @@ function bindUi() {
       else toggleSidebar(false);
     }
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "e") { e.preventDefault(); toggleFiles(); }
+    if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "g") { e.preventDefault(); $("#changes-modal").hidden ? openChanges() : closeChanges(); }
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); }
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "n") { e.preventDefault(); openNewModal(); }
     if (e.ctrlKey && e.key === ",") { e.preventDefault(); $("#settings").hidden ? openSettings() : closeSettings(); }

@@ -12,16 +12,19 @@ O que o usuário vê e faz no Rory Assistant. Detalhes de implementação: [arqu
 - **Várias conversas ao mesmo tempo**: dá para deixar uma trabalhando e ir para outra.
 - **Continuar no terminal** (menu ⋮): abre o Claude Code no terminal na mesma sessão.
 
+- **Buscar no conteúdo**: a busca da barra lateral também procura dentro das mensagens (a partir de 3 letras). Os resultados aparecem em "Nas mensagens"; clique para abrir a conversa já na mensagem.
+- **Exportar conversa** (⋮ da conversa ou ⋮ do topo): salva em `.md` ou `.html` (com as ferramentas usadas, comandos `!` e marcas de compactação). Pergunta onde salvar.
 ## Mensagens
 
 - Enter envia, Shift+Enter quebra linha. ↑/↓ na caixa: mensagens já enviadas.
 - **Mandar no meio do trabalho**: a mensagem vai na hora, como no terminal.
 - **Parar**: Esc, Ctrl+C (sem texto selecionado) ou o botão ■.
-- **Anexos**: Ctrl+V, arrastar ou clipe. Imagens com prévia; PDF e Office convertidos para texto no PC; áudio e vídeo transcritos no PC.
+- **Fila** (Ctrl+Enter com o Claude trabalhando): a mensagem espera e vai sozinha quando o turno acabar, uma por vez, na ordem. Aparece acima da caixa, com × para tirar. Se você parar o turno ou ele der erro, a fila pausa ("Enviar fila" retoma; mandar uma mensagem também). Só texto (sem anexos nem `!comando`).
+- **Anexos**: Ctrl+V, arrastar ou clipe. Imagens com prévia; PDF e Office convertidos para texto no PC; áudio e vídeo transcritos no PC. Limite de 50 MB por anexo e 120 MB por mensagem.
 - **Microfone**: grava, transcreve no PC e põe o texto na caixa (ou envia direto, conforme a configuração).
 - **`/comandos` e skills**: digite `/` para ver a lista. Comandos que no terminal abrem telas (`/login`, `/model`, `/usage`…) abrem a tela do app.
 - **`/mcp`**: abre a lista de servidores MCP da pasta da conversa (estado, tipo/URL, ferramentas) com **Autenticar** (abre o navegador para o login e acompanha até conectar), **Reconectar** e **Ativar/Desativar**.
-- **`!comando`**: roda no PowerShell da pasta da conversa sem gastar tokens. Mostra sugestões ao digitar (Tab completa, ↑/↓ escolhe, Enter roda). A saída vai como contexto junto da próxima mensagem.
+- **`!comando`**: roda no PowerShell da pasta da conversa sem gastar tokens. Mostra sugestões ao digitar (Tab completa, ↑/↓ escolhe, Enter roda). A saída vai como contexto junto da próxima mensagem. Comandos que apagam muita coisa (`rm -rf`, `Remove-Item -Recurse`, `git reset --hard`, `format`...) pedem confirmação antes.
 
 ## Acompanhar o trabalho
 
@@ -31,7 +34,9 @@ O que o usuário vê e faz no Rory Assistant. Detalhes de implementação: [arqu
 - **Perguntas do Claude**: quando ele pergunta algo (AskUserQuestion), aparece um cartão com as opções (uma ou várias) e um campo "Outro…"; a resposta volta para ele, como no terminal.
 - **Subagentes**: cada um aparece com a tarefa e o andamento.
 
+- **Avisos**: com a janela em segundo plano, o Windows avisa (com som, e a barra de tarefas pisca) quando uma conversa termina, dá erro ou pede permissão/resposta. Clicar no aviso abre a conversa. Com a janela em primeiro plano, outra conversa que termina mostra um aviso pequeno no app. Desliga em Configurações → Avisos.
 ## Arquivos do projeto
+- **Mudanças** (Ctrl+G ou botão **Mudanças** no topo): lista o que mudou no git da pasta desde o último commit, com o diff de cada arquivo. **Revisado** faz `git add` do arquivo; **Reverter** volta o arquivo ao último commit (arquivo novo sai do projeto) depois de confirmar, guardando uma cópia em `revertidos/` na pasta de dados do app.
 
 - **Explorador** (Ctrl+E ou botão **Arquivos** no topo): visualizador ao lado do chat e árvore da pasta na ponta direita. Arraste as divisórias para ajustar. Abre sozinho com a janela larga e lembra se você fechou.
 - Visualizador: Markdown formatado (botão alterna para o código), código com cores e números de linha, imagens, PDF/Office convertidos.
@@ -57,6 +62,7 @@ O que o usuário vê e faz no Rory Assistant. Detalhes de implementação: [arqu
 - **Plano**: card próprio com o plano completo e 3 opções (teclas 1/2/3): aceitar edições automaticamente, aprovar manualmente, ou continuar planejando com um comentário. Aviso "Modo planejamento" perto do campo.
 - **Modelos**: em Configurações, "Modelo do agente" e "Modelo dos subagentes" (automático = um degrau abaixo). `/model <modelo>` troca o da conversa; `/model sub <modelo|auto>` o dos subagentes. Também há "Esforço" (baixo/médio/alto): `/effort baixo|médio|alto|auto` muda essa mesma preferência. `/rename <nome>` renomeia a conversa na barra lateral (sem nome, edita o título no topo). Mudanças valem a partir da próxima mensagem.
 - **Caminhos**: clique direito em arquivo/pasta ou botão ⋯ no visualizador: copiar caminho, caminho relativo, mostrar no Explorer/Finder.
+- **Diagnóstico**: Configurações → "Abrir pasta de logs" mostra o `app.log` (útil ao reportar um problema).
 - **`!comando`**: chip com o tamanho do contexto (descartável) e botão para parar.
 - **Anexos grandes** viram prévia + caminho, com "~N tokens" no chip. Histórico longo carrega as últimas 40 mensagens ("Carregar anteriores").
 

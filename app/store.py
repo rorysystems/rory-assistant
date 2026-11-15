@@ -15,6 +15,7 @@ daqui é para redesenhar a tela e listar as conversas antigas.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 import mimetypes
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
+from .log import log
 
 _lock = threading.RLock()
 
@@ -38,7 +40,7 @@ def _write_json(path: Path, data: Any, backup: bool = False) -> None:
     `backup`, mantém um .bak do conteúdo anterior (renovado no máximo a cada 60 s)."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as handle:
-        handle.write(json.dumps(data, ensure_ascii=False, indent=2))
+        handle.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
         handle.flush()
         os.fsync(handle.fileno())
     if backup and path.exists():
@@ -97,6 +99,8 @@ def make_title(text: str, attachments: list[dict[str, Any]]) -> str:
 
 class Store:
     def __init__(self) -> None:
+        self._save_timer: threading.Timer | None = None
+        self._spans: dict[str, dict[str, Any]] = {}
         state = _read_json(config.STATE_FILE, {}, backup=True)
         self.state: dict[str, Any] = state if isinstance(state, dict) else {}
         self.state.setdefault("conversations", [])
@@ -111,10 +115,45 @@ class Store:
             if c["id"] == self.state["active"] or self._has_history(c["id"])
         ]
         self.save()
+        atexit.register(self.flush)
 
     def save(self) -> None:
         with _lock:
+            self._save_timer = None
             _write_json(config.STATE_FILE, self.state, backup=True)
+
+    def save_soon(self, delay: float = 1.5) -> None:
+        """Grava daqui a pouco (junta várias mudanças seguidas numa escrita só). Use para
+        o que muda a cada mensagem; `flush()` ao fechar garante que nada se perde."""
+        with _lock:
+            if self._save_timer is not None:
+                return
+            timer = threading.Timer(delay, self._timer_save)
+            timer.daemon = True
+            self._save_timer = timer
+            timer.start()
+
+    def _timer_save(self) -> None:
+        try:
+            self.save()
+        except OSError as error:
+            log.error("não consegui gravar o estado: %s", error)
+
+    def flush(self) -> None:
+        """Grava na hora o que estiver esperando (fechamento do app)."""
+        with _lock:
+            timer, self._save_timer = self._save_timer, None
+            if timer is not None:
+                timer.cancel()
+                self.save()
+
+    def active(self) -> str | None:
+        with _lock:
+            return self.state.get("active")
+
+    def theme(self) -> str:
+        with _lock:
+            return self.state.get("theme", "dark")
 
     # --- preferências / tema / conversa ativa (sempre sob o lock) -----------------
     def prefs(self) -> dict[str, Any]:
@@ -146,8 +185,15 @@ class Store:
         with _lock:
             return sorted(self.state["conversations"], key=lambda c: c.get("updated", ""), reverse=True)
 
-    def get(self, conv_id: str) -> dict[str, Any] | None:
+    def _get(self, conv_id: str) -> dict[str, Any] | None:
+        """A conversa "viva" (quem muda campos usa esta, sob o lock)."""
         return next((c for c in self.state["conversations"] if c["id"] == conv_id), None)
+
+    def get(self, conv_id: str) -> dict[str, Any] | None:
+        """Cópia da conversa (segura para ler fora do lock)."""
+        with _lock:
+            conv = self._get(conv_id)
+            return dict(conv) if conv else None
 
     def create(self, path: str) -> dict[str, Any]:
         with _lock:
@@ -180,7 +226,7 @@ class Store:
     def update(self, conv_id: str, **fields: Any) -> None:
         """Atualiza campos da conversa; não grava se nada mudou."""
         with _lock:
-            conv = self.get(conv_id)
+            conv = self._get(conv_id)
             if conv and any(k not in conv or conv[k] != v for k, v in fields.items()):
                 conv.update(fields)
                 self.save()
@@ -257,7 +303,7 @@ class Store:
 
     def set_conv_group(self, conv_id: str, group_id: str | None) -> None:
         with _lock:
-            conv = self.get(conv_id)
+            conv = self._get(conv_id)
             if not conv:
                 return
             if group_id and not any(g["id"] == group_id for g in self.state.get("groups") or []):
@@ -357,15 +403,61 @@ class Store:
     def history(self, conv_id: str) -> list[dict[str, Any]]:
         return self._parse_lines(self._history_lines(conv_id))
 
+    def _line_spans(self, conv_id: str) -> list[tuple[int, int]]:
+        """Posição (início, fim) de cada linha não vazia do .jsonl. Fica em memória e só
+        examina o que foi acrescentado desde a última vez (o arquivo é só append)."""
+        self._migrate_history(conv_id)
+        path = self._history_file(conv_id)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            self._spans.pop(conv_id, None)
+            return []
+        with _lock:
+            cached = self._spans.get(conv_id)
+            if cached is None or cached["size"] > size:
+                cached = {"size": 0, "spans": []}  # arquivo novo ou trocado: recomeça
+            pos = cached["size"]
+            spans = cached["spans"]
+            tail: list[tuple[int, int]] = []
+            if size > pos:
+                with path.open("rb") as handle:
+                    handle.seek(pos)
+                    data = handle.read(size - pos)
+                start = 0
+                while start < len(data):
+                    end = data.find(b"\n", start)
+                    if end < 0:  # última linha ainda sem quebra (cortada): vale, mas não fica no cache
+                        if data[start:].strip():
+                            tail.append((pos + start, pos + len(data)))
+                        break
+                    if data[start:end].strip():
+                        spans.append((pos + start, pos + end))
+                    start = end + 1
+                    cached["size"] = pos + start
+            self._spans[conv_id] = cached
+            return spans + tail
+
     def history_page(self, conv_id: str, before: int | None = None, limit: int = 40) -> dict[str, Any]:
         """Uma página do histórico: as `limit` entradas anteriores ao índice `before`
         (None = as últimas). Devolve {items, start, total}; para a página anterior,
-        chame de novo com before=start."""
-        lines = self._history_lines(conv_id)
-        total = len(lines)
+        chame de novo com before=start. Lê só os trechos da página, não o arquivo todo."""
+        spans = self._line_spans(conv_id)
+        total = len(spans)
         end = total if before is None else max(0, min(int(before), total))
         start = max(0, end - max(1, int(limit)))
-        return {"items": self._parse_lines(lines[start:end]), "start": start, "total": total}
+        lines: list[str] = []
+        if end > start:
+            try:
+                with self._history_file(conv_id).open("rb") as handle:
+                    handle.seek(spans[start][0])
+                    chunk = handle.read(spans[end - 1][1] - spans[start][0])
+                base = spans[start][0]
+                for a, b in spans[start:end]:
+                    lines.append(chunk[a - base : b - base].decode("utf-8", errors="replace"))
+            except OSError:
+                lines = []
+        return {"items": self._parse_lines(lines), "start": start, "total": total}
 
     def append_history(self, conv_id: str, entry: dict[str, Any]) -> None:
         with _lock:
@@ -379,7 +471,7 @@ class Store:
                     if handle.read(1) != b"\n":  # linha anterior cortada: não cola nela
                         handle.write(b"\n")
                 handle.write(line)
-            conv = self.get(conv_id)
+            conv = self._get(conv_id)
             if conv:
                 changed = False
                 updated = entry.get("time") or now_iso()
@@ -390,7 +482,7 @@ class Store:
                     conv["title"] = make_title(entry.get("text", ""), entry.get("attachments") or [])
                     changed = True
                 if changed:
-                    self.save()
+                    self.save_soon()  # a cada mensagem: não regrava o estado inteiro toda vez
 
     def cleanup_old(self, days: int = 30) -> int:
         """Apaga com mais de `days` dias: anexos que nenhuma conversa existente cita,
@@ -421,6 +513,81 @@ class Store:
                     continue
         return removed
 
+    # --- fila de mensagens (enviadas uma a uma quando o turno atual termina) ------------
+    def queue(self, conv_id: str) -> list[dict[str, Any]]:
+        with _lock:
+            conv = self._get(conv_id)
+            return [dict(item) for item in (conv or {}).get("queue") or []]
+
+    def queue_push(self, conv_id: str, text: str) -> list[dict[str, Any]]:
+        with _lock:
+            conv = self._get(conv_id)
+            if conv is None:
+                return []
+            conv.setdefault("queue", []).append({"id": uuid.uuid4().hex[:8], "text": text})
+            self.save()
+            return self.queue(conv_id)
+
+    def queue_pop(self, conv_id: str) -> dict[str, Any] | None:
+        with _lock:
+            conv = self._get(conv_id)
+            if not conv or not conv.get("queue"):
+                return None
+            item = conv["queue"].pop(0)
+            self.save()
+            return item
+
+    def queue_remove(self, conv_id: str, item_id: str) -> list[dict[str, Any]]:
+        with _lock:
+            conv = self._get(conv_id)
+            if conv and conv.get("queue"):
+                conv["queue"] = [i for i in conv["queue"] if i.get("id") != item_id]
+                self.save()
+            return self.queue(conv_id)
+
+    # --- busca no conteúdo --------------------------------------------------------------
+    def search(self, query: str, limit: int = 60, per_conv: int = 3) -> list[dict[str, Any]]:
+        """Procura `query` (sem diferenciar maiúsculas) no texto das mensagens de todas as
+        conversas. Devolve [{conv, title, index, role, snippet, time}], conversas mais
+        recentes primeiro; `index` é a posição da entrada no histórico (para pular até ela)."""
+        q = (query or "").strip().lower()
+        if len(q) < 2:
+            return []
+        with _lock:
+            convs = sorted(self._conversations_copy(), key=lambda c: c.get("updated") or "", reverse=True)
+        hits: list[dict[str, Any]] = []
+        for conv in convs:
+            found = 0
+            lines = self._history_lines(conv["id"])
+            for index in range(len(lines) - 1, -1, -1):  # mais novas primeiro
+                line = lines[index]
+                if q not in line.lower():
+                    continue  # filtro barato antes de decodificar o JSON
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                text = entry_text(entry)
+                pos = text.lower().find(q)
+                if pos < 0:
+                    continue
+                start = max(0, pos - 50)
+                snippet = text[start : pos + len(q) + 80].replace("\n", " ")
+                hits.append({
+                    "conv": conv["id"], "title": conv.get("title") or "Nova conversa", "index": index,
+                    "role": entry.get("role"), "time": entry.get("time"),
+                    "snippet": ("…" if start else "") + snippet.strip(),
+                })
+                found += 1
+                if found >= per_conv or len(hits) >= limit:
+                    break
+            if len(hits) >= limit:
+                break
+        return hits
+
+    def _conversations_copy(self) -> list[dict[str, Any]]:
+        return [dict(c) for c in self.state["conversations"]]
+
     # --- anexos -----------------------------------------------------------------
     def save_attachment(self, name: str, data: bytes) -> str:
         suffix = Path(name).suffix.lower()[:10]
@@ -437,3 +604,24 @@ class Store:
 
     def attachment_path(self, att_id: str) -> Path:
         return config.ATTACH_DIR / Path(att_id).name
+
+
+def entry_text(entry: dict[str, Any]) -> str:
+    """Texto de uma entrada do histórico (busca e exportação)."""
+    role = entry.get("role")
+    if role == "user":
+        names = " ".join(a.get("name", "") for a in entry.get("attachments") or [])
+        return " ".join(t for t in (entry.get("text") or "", names) if t)
+    if role == "assistant":
+        out = []
+        for part in entry.get("parts") or []:
+            if part.get("type") == "text":
+                out.append(part.get("text") or "")
+            elif part.get("type") == "tool":
+                out.append(f"{part.get('name', '')} {part.get('summary', '')}".strip())
+        if entry.get("error"):
+            out.append(str(entry["error"]))
+        return "\n".join(out)
+    if role == "shell":
+        return f"!{entry.get('command', '')}\n{entry.get('output', '')}"
+    return str(entry.get("text") or "")

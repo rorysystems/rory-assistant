@@ -18,12 +18,16 @@ from typing import Any
 
 import webview
 
-from . import config, convert, usage
+from . import config, convert, export, gitdiff, usage
+from . import notify as notifier
 from .agent import AgentHub
+from .log import LOG_FILE, log
 from .shellcomplete import ShellCompleter
 from .store import Store, now_iso
 
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+ATTACH_MAX_BYTES = 50_000_000  # por anexo
+ATTACH_MAX_TOTAL = 120_000_000  # por mensagem
 SHELL_TIMEOUT = 600  # s: comando "!" que passar disso é parado (a árvore de processos toda)
 SHELL_HEAD_BYTES = 10_000  # início da saída guardado (o 1º erro de build costuma estar no topo)
 SHELL_TAIL_BYTES = 20_000  # fim da saída guardado
@@ -143,7 +147,7 @@ class Api:
         try:
             cleanup()
         except Exception as error:  # noqa: BLE001
-            print(f"[cleanup] {error}")
+            log.warning("limpeza: %s", error)
 
     def _attach(self, window: webview.Window) -> None:
         self._window = window
@@ -176,7 +180,7 @@ class Api:
     def _coalesce(self, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Junta pedaços de texto seguidos da mesma conversa; descarta o texto das conversas
         que não estão na tela (a tela recupera pelo set_active/live_parts)."""
-        active = self.store.state.get("active")
+        active = self.store.active()
         out: list[dict[str, Any]] = []
         for event in batch:
             if event.get("type") == "text":
@@ -200,7 +204,7 @@ class Api:
         try:
             self._window.run_js(script)
         except Exception as error:  # janela fechando
-            print(f"[emit] {error}")
+            log.info("emit: %s", error)
 
     # --- estado ---------------------------------------------------------------
     def get_state(self) -> dict[str, Any]:
@@ -209,17 +213,16 @@ class Api:
             # primeira vez: já abre uma conversa na pasta do usuário
             self.store.create(config.HOME)
             convs = self.store.conversations()
-        active = self.store.state.get("active")
+        active = self.store.active()
         if not self.store.get(active or ""):
             active = convs[0]["id"]
-            self.store.state["active"] = active
-            self.store.save()
+            self.store.set_active(active)
         return {
             "app": {"name": config.APP_NAME, "version": config.APP_VERSION},
             "conversations": convs,
             "groups": self.store.groups(),
             "active": active,
-            "theme": self.store.state.get("theme", "dark"),
+            "theme": self.store.theme(),
             "home": config.HOME,
         }
 
@@ -235,13 +238,14 @@ class Api:
         "use_subagents": True,  # tarefas grandes: o Claude coordena subagentes
         "subagent_model": "auto",  # "auto" = um degrau abaixo do principal, ou um alias/id (opus, sonnet...)
         "effort": "",  # "" = padrão do Claude Code | low | medium | high
+        "notify": True,  # aviso do sistema quando termina/pede permissão com a janela em segundo plano
         "files_width": 0,  # largura do explorador de arquivos (px); 0 = metade da área
         "files_tree_width": 220,  # largura da árvore dentro do explorador (px)
         "files_open": True,  # explorador aberto ao iniciar (janela larga); lembra o último estado
     }
 
     def prefs(self) -> dict[str, Any]:
-        return {**self.PREF_DEFAULTS, **(self.store.state.get("prefs") or {})}
+        return {**self.PREF_DEFAULTS, **self.store.prefs()}
 
     # prefs que mudam o prompt de sistema / env / opções do Claude Code: as sessões abertas
     # ficam "desatualizadas" e reconectam na próxima mensagem de cada uma
@@ -288,10 +292,8 @@ class Api:
             allowed = self.PREF_CHOICES.get(key)
             if allowed and value not in allowed:
                 return self.get_prefs()
-            prefs = self.store.state.setdefault("prefs", {})
-            if prefs.get(key, self.PREF_DEFAULTS[key]) != value:
-                prefs[key] = value
-                self.store.save()
+            if self.store.prefs().get(key, self.PREF_DEFAULTS[key]) != value:
+                self.store.set_pref(key, value)
                 if key in self.SESSION_PREFS:
                     stale = getattr(self.hub, "mark_all_stale", None)
                     (stale or self.hub.disconnect_all)()
@@ -337,12 +339,10 @@ class Api:
         return {"ok": True, **result}
 
     def set_theme(self, theme: str) -> None:
-        self.store.state["theme"] = "light" if theme == "light" else "dark"
-        self.store.save()
+        self.store.set_theme(theme)
 
     def set_active(self, conv_id: str) -> dict[str, Any]:
-        self.store.state["active"] = conv_id
-        self.store.save()
+        self.store.set_active(conv_id)
         page = self._history_page(conv_id, None, HISTORY_PAGE)
         return {
             "history": page["items"],  # só as últimas HISTORY_PAGE entradas
@@ -353,6 +353,7 @@ class Api:
             "live_parts": self.hub.live_parts(conv_id),
             "permissions": self.hub.pending_permissions(conv_id),
             "compacting": self.hub.is_compacting(conv_id),
+            "queue": self.store.queue(conv_id),
         }
 
     def _history_page(self, conv_id: str, before: int | None, limit: int) -> dict[str, Any]:
@@ -620,12 +621,25 @@ class Api:
         saved: list[dict[str, Any]] = []
         budget = convert.new_budget()  # limite total de texto de anexos por mensagem
         prefs = self.prefs()
+        decoded: list[tuple[str, bytes]] = []
+        total_bytes = 0
         for att in attachments or []:
             name = att.get("name") or "anexo"
             data = att.get("data") or ""
             if "," in data[:200]:
                 data = data.split(",", 1)[1]
-            content = base64.b64decode(data)
+            # confere o tamanho antes de decodificar (base64 ocupa ~4/3 do original)
+            if len(data) * 3 // 4 > ATTACH_MAX_BYTES:
+                return {"ok": False, "error": f"“{name}” passa de {ATTACH_MAX_BYTES // 1_000_000} MB: não foi enviado."}
+            try:
+                content = base64.b64decode(data, validate=False)
+            except (ValueError, TypeError):
+                return {"ok": False, "error": f"Não consegui ler o anexo “{name}” (arquivo corrompido?)."}
+            total_bytes += len(content)
+            if total_bytes > ATTACH_MAX_TOTAL:
+                return {"ok": False, "error": f"Os anexos juntos passam de {ATTACH_MAX_TOTAL // 1_000_000} MB: envie em mensagens separadas."}
+            decoded.append((name, content))
+        for name, content in decoded:
             att_id = self.store.save_attachment(name, content)
             path = str(self.store.attachment_path(att_id))
             att_blocks = convert.to_blocks(name, content, path, prefs, budget)
@@ -863,7 +877,7 @@ class Api:
                 if shutil.which(cmd[0]) and _pipe_to(cmd, text):
                     return True
         except Exception as error:  # noqa: BLE001
-            print(f"[copy] {error}")
+            log.warning("copiar: %s", error)
         return False
 
     def _copy_windows(self, text: str) -> bool:
@@ -884,7 +898,7 @@ class Api:
                     Clipboard.Clear()
                 result["ok"] = True
             except Exception as error:  # noqa: BLE001
-                print(f"[copy] {error}")
+                log.warning("copiar: %s", error)
             finally:
                 done.set()
 
@@ -1039,11 +1053,146 @@ class Api:
                 return {**self.check_health(), "error": str(error)}
         return self.check_health()
 
-    def open_url(self, url: str) -> None:
-        if url.startswith(("https://", "http://")):
-            import webbrowser
+    @staticmethod
+    def safe_url(url: str) -> str | None:
+        """Só http(s) com host, sem espaços/controles nem usuário:senha embutido (links vindos
+        do markdown do Claude ou do login de um servidor MCP). Devolve a URL ou None."""
+        from urllib.parse import urlsplit
 
-            webbrowser.open(url)
+        url = (url or "").strip()
+        if not url or len(url) > 4000 or any(ch.isspace() or ord(ch) < 32 for ch in url):
+            return None
+        try:
+            parts = urlsplit(url)
+            host = parts.hostname
+        except ValueError:
+            return None
+        if parts.scheme not in ("http", "https") or not host or parts.username or parts.password:
+            return None
+        return url
+
+    def open_url(self, url: str) -> bool:
+        safe = self.safe_url(url)
+        if not safe:
+            log.warning("link recusado: %.200s", url)
+            return False
+        import webbrowser
+
+        webbrowser.open(safe)
+        return True
+
+    def open_logs(self) -> bool:
+        """Mostra o app.log (diagnóstico) no gerenciador de arquivos."""
+        if not LOG_FILE.exists():
+            LOG_FILE.touch()
+        _reveal(str(LOG_FILE))
+        return True
+
+    # --- avisos do sistema -------------------------------------------------------------
+    NOTIFY_TEXTS = {
+        "done": "Terminou de responder.",
+        "error": "Terminou com erro.",
+        "ask": "Está esperando sua permissão.",
+        "question": "Tem uma pergunta para você.",
+        "plan": "O plano está pronto para você revisar.",
+    }
+
+    def notify(self, conv_id: str, kind: str) -> bool:
+        """Chamado pela tela quando a janela está em segundo plano. Clicar no aviso traz a
+        janela e abre a conversa."""
+        if not self.prefs().get("notify") or not self._window:
+            return False
+        conv = self.store.get(conv_id)
+        if not conv:
+            return False
+        window = self._window
+
+        def clicked() -> None:
+            notifier.focus(window)
+            self._emit({"type": "focus_conv", "conv": conv_id})
+
+        title = f"{conv.get('title') or 'Conversa'} · {config.WINDOW_TITLE}"
+        return notifier.show(window, title, self.NOTIFY_TEXTS.get(kind, "Atualizou."), clicked)
+
+    # --- fila de mensagens ---------------------------------------------------------------
+    def queue_add(self, conv_id: str, text: str) -> dict[str, Any]:
+        """Enfileira: vai sozinha quando o turno atual (e as anteriores da fila) terminar."""
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "Mensagem vazia."}
+        if not self.store.get(conv_id):
+            return {"ok": False, "error": "Conversa não encontrada."}
+        queue = self.store.queue_push(conv_id, text)
+        self.hub.kick_queue(conv_id)
+        return {"ok": True, "queue": queue}
+
+    def queue_remove(self, conv_id: str, item_id: str) -> dict[str, Any]:
+        return {"ok": True, "queue": self.store.queue_remove(conv_id, str(item_id))}
+
+    def queue_resume(self, conv_id: str) -> dict[str, Any]:
+        """Retoma a fila pausada (parou o turno, deu erro ou o app foi reaberto)."""
+        self.hub.kick_queue(conv_id, resume=True)
+        return {"ok": True, "queue": self.store.queue(conv_id)}
+
+    # --- busca no conteúdo das conversas ------------------------------------------------
+    def search_messages(self, query: str) -> dict[str, Any]:
+        try:
+            return {"ok": True, "hits": self.store.search(str(query or ""))}
+        except Exception as error:  # noqa: BLE001
+            log.exception("busca falhou")
+            return {"ok": False, "error": str(error), "hits": []}
+
+    # --- exportar conversa ---------------------------------------------------------------
+    def export_markdown(self, conv_id: str, tools: bool = True) -> dict[str, Any]:
+        conv = self.store.get(conv_id)
+        if not conv:
+            return {"ok": False, "error": "Conversa não encontrada."}
+        md = export.to_markdown(conv, self.store.history(conv_id), bool(tools))
+        return {"ok": True, "markdown": md, "filename": export.safe_filename(conv.get("title") or "conversa")}
+
+    def save_export(self, filename: str, content: str) -> dict[str, Any]:
+        """Pergunta onde salvar (começa em Downloads) e grava. Nunca na pasta do projeto
+        sem o usuário escolher."""
+        assert self._window
+        name = export.safe_filename(Path(filename or "conversa.md").stem) + (Path(filename).suffix.lower() or ".md")
+        start = Path(config.HOME) / "Downloads"
+        result = self._window.create_file_dialog(
+            webview.FileDialog.SAVE, directory=str(start if start.is_dir() else config.HOME), save_filename=name,
+        )
+        if not result:
+            return {"ok": False, "cancelled": True}
+        target = Path(result if isinstance(result, str) else result[0])
+        try:
+            target.write_text(content or "", encoding="utf-8")
+        except OSError as error:
+            return {"ok": False, "error": f"Não consegui salvar: {error}"}
+        _reveal(str(target))
+        return {"ok": True, "path": str(target)}
+
+    # --- painel "Mudanças" (git da pasta da conversa) -----------------------------------
+    def _git(self, conv_id: str, fn: Any, *args: Any) -> dict[str, Any]:
+        folder = self._path(conv_id)
+        if not folder or not folder.is_dir():
+            return {"ok": False, "error": "Pasta da conversa não encontrada."}
+        try:
+            return {"ok": True, **(fn(folder, *args) or {})}
+        except gitdiff.GitError as error:
+            return {"ok": False, "error": str(error)}
+        except Exception as error:  # noqa: BLE001
+            log.exception("git falhou")
+            return {"ok": False, "error": f"{type(error).__name__}: {error}"}
+
+    def git_changes(self, conv_id: str) -> dict[str, Any]:
+        return self._git(conv_id, gitdiff.changes)
+
+    def git_diff(self, conv_id: str, path: str) -> dict[str, Any]:
+        return self._git(conv_id, gitdiff.diff, str(path))
+
+    def git_stage(self, conv_id: str, path: str, orig: str = "") -> dict[str, Any]:
+        return self._git(conv_id, gitdiff.stage, str(path), str(orig or ""))
+
+    def git_revert(self, conv_id: str, path: str, orig: str = "") -> dict[str, Any]:
+        return self._git(conv_id, gitdiff.revert, str(path), str(orig or ""))
 
 
 def _pipe_to(cmd: list[str], text: str) -> bool:
@@ -1057,7 +1206,9 @@ def _pipe_to(cmd: list[str], text: str) -> bool:
 def _reveal(path: str) -> None:
     """Mostra o arquivo/pasta no gerenciador de arquivos (selecionado, quando dá)."""
     if sys.platform == "win32":
-        subprocess.Popen(["explorer", f"/select,{os.path.normpath(path)}"], creationflags=NO_WINDOW)
+        # String, não lista: o subprocess poria aspas em "/select,..." inteiro (caminho com
+        # espaço, como "Rory Assistant") e o Explorer abriria a pasta Documentos.
+        subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"', creationflags=NO_WINDOW)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", "-R", path])
     else:
@@ -1113,7 +1264,7 @@ def _allow_microphone(window: webview.Window) -> None:
         window._rory_mic_hooked = True  # type: ignore[attr-defined]
         form.BeginInvoke(Action(hook))
     except Exception as error:  # noqa: BLE001
-        print(f"[mic] não consegui liberar o microfone automaticamente: {error}")
+        log.warning("microfone: não consegui liberar automaticamente: %s", error)
 
 
 def _free_port() -> int:
@@ -1194,6 +1345,8 @@ def main() -> None:
     )
     api._attach(window)
     window.events.closed += api.hub.shutdown
+    window.events.closed += api.store.flush
+    window.events.closed += lambda: notifier.dispose(window)
     window.events.closed += api.shell.close
     window.events.loaded += lambda: _allow_microphone(window)
     icon = config.ICON_ICO if sys.platform == "win32" else config.ICON_PNG

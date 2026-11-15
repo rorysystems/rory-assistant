@@ -14,18 +14,18 @@ Desktop chat app (pywebview + HTML/JS) for developers, by Rory Systems. It runs 
 
 ## Key files
 
-`app/main.py` (window + `Api`, methods called by JS) · `app/agent.py` (`AgentHub`/`Session`, one `ClaudeSDKClient` per conversation) · `app/store.py` (`%APPDATA%\Rory Assistant\state.json`, `history/`) · `app/convert.py` · `app/media.py` · `app/usage.py` · `app/shellcomplete.py` · `ui/app.js` · `ui/index.html` · `ui/style.css` · `packaging/` · `.github/workflows/build.yml`.
+`app/main.py` (window + `Api`, methods called by JS) · `app/agent.py` (`AgentHub`/`Session`, one `ClaudeSDKClient` per conversation) · `app/store.py` (`%APPDATA%\Rory Assistant\state.json`, `history/`) · `app/convert.py` · `app/media.py` · `app/usage.py` · `app/log.py` (`app.log`; use `log`, not `print`) · `app/gitdiff.py` (Changes panel) · `app/notify.py` (system notifications) · `app/export.py` · `tests/` (pytest) · `app/shellcomplete.py` · `ui/app.js` · `ui/index.html` · `ui/style.css` · `packaging/` · `.github/workflows/build.yml`.
 
 ## Rules
 
 - **After touching `ui/*.js`, run `.venv\Scripts\python.exe scripts\check_js.py`** (no Node on this PC). A syntax error makes the app open "frozen".
-- Also check `.venv\Scripts\python.exe -c "import app.main"` after Python changes.
+- Run `.venv\Scripts\python.exe -m pytest -q` and `.venv\Scripts\python.exe -c "import app.main"` after Python changes.
 - **Visual tests are done by the user.** Don't launch test instances or take screenshots unless asked.
 - **Never close the user's running instance** (child of the floating button) and **never click "Sair da conta"**: it kills the session you are running in. Test in a separate instance with `RORY_DATA_DIR=<temp dir>`. Changes only apply after the user reopens the app.
 - **Build installers only when asked** (`packaging\build-windows.ps1`; Linux only via GitHub Actions; no macOS installer, only `install.sh`).
 - All WinForms/WebView2 access goes inside `form.BeginInvoke(Action(...))` (deadlock otherwise).
 - All markdown rendering goes through DOMPurify; links open in the browser.
-- The app never writes into the project folder.
+- The app never writes into the project folder (only exception: "Reverter" in the Changes panel, after confirmation, with a backup in the data folder).
 - UI text, docs and commit messages are in pt-BR.
 - New Claude model → add its price to `PRICES` in `app/usage.py`.
 - Git: repo on the **rorysystems** account; no Claude co-authorship.

@@ -9,7 +9,12 @@ Rory Assistant = janela pywebview (HTML/JS) + backend Python que usa o **Claude 
 | `app/config.py` | nome do app, versão, caminhos de dados (`%APPDATA%\Rory Assistant`). Trocar o nome = aqui + `packaging/installer.iss` + título no `claude-tray.ps1` |
 | `app/main.py` | janela pywebview e a classe `Api` (métodos chamados pelo JS como `window.pywebview.api.*`, cada chamada numa thread) |
 | `app/agent.py` | `AgentHub` (loop asyncio Proactor numa thread) e `Session`: um `ClaudeSDKClient` por conversa, com streaming, permissões, retomada e compactação |
-| `app/store.py` | `state.json` (conversas, conversa ativa, tema, prefs), `history/<id>.json` (mensagens para redesenhar a tela), `attachments/` |
+| `app/store.py` | `state.json` (conversas, conversa ativa, tema, prefs), `history/<id>.jsonl` (mensagens para redesenhar a tela; só append, com índice de linhas em memória para paginar sem reler tudo), `attachments/`. Escritas do `state.json` por mensagem são adiadas (`save_soon`, ~1,5 s) e gravadas ao fechar (`flush`); `get()` devolve cópia |
+| `app/log.py` | `app.log` rotativo na pasta de dados (`from .log import log`) |
+| `app/gitdiff.py` | painel "Mudanças": `git status`/`diff`/`add`/reverter da pasta da conversa (antes de reverter, copia o arquivo para `revertidos/` na pasta de dados) |
+| `app/notify.py` | aviso do sistema (Windows: balão do `NotifyIcon` + `FlashWindowEx`; macOS `osascript`; Linux `notify-send`) |
+| `app/export.py` | histórico → Markdown (o HTML é montado no JS com marked + DOMPurify) |
+| `tests/` | pytest: store, funções puras do agent, `Api` e compatibilidade com o SDK (`.github/workflows/tests.yml`) |
 | `app/convert.py` | anexo → blocos da API: imagem (até 1568 px), PDF por página (texto ou imagem), Office/CSV via MarkItDown, texto. `to_markdown` para o "Converter para .md" e o visualizador |
 | `app/media.py` | transcrição (faster-whisper) e OCR (Windows.Media.Ocr) — tudo no PC |
 | `app/usage.py` | tokens da conversa, limites de 5 h / semana, tabela de custo |
@@ -54,7 +59,7 @@ Rory Assistant = janela pywebview (HTML/JS) + backend Python que usa o **Claude 
 ## Contexto e compactação
 
 - **Barra de contexto** (`usage.conversation_usage`): lê `~/.claude/projects/*/<sessão>.jsonl` e os subagentes. Contexto = entrada + cache da última resposta sobre a janela (1M; 200 mil nos modelos antigos).
-- **Compactar sem perder a tela**: `/compact` resume a sessão do Claude; o `history/<id>.json` não muda. O `compact_boundary` grava um `divider` com `pre_tokens` e `trigger`.
+- **Compactar sem perder a tela**: `/compact` resume a sessão do Claude; o `history/<id>.jsonl` não muda. O `compact_boundary` grava um `divider` com `pre_tokens` e `trigger`.
 - **Automática** (pref `auto_compact_at`, padrão 60 mil além do piso; 0 desliga):
   - **Piso** (`ctx_floor`, estimado em 50 mil até medir) = contexto da 1ª resposta após compactar (instruções, ferramentas, CLAUDE.md, skills). Não some ao compactar (~40–80 mil). Gatilho: `context - piso >= limite`.
   - **Em segundo plano** (`Session._maybe_compact`): no fim do turno (idle), manda `COMPACT_COMMAND` sem aparecer na conversa; tela mostra "compactando em segundo plano…" (evento `compacting`). Mensagem enviada nesse meio-tempo fica em `held`. Uma tentativa por mensagem (`compact_tried`).
@@ -88,6 +93,14 @@ Rory Assistant = janela pywebview (HTML/JS) + backend Python que usa o **Claude 
 - `Api.list_dir` (uma pasta por vez, sob demanda; esconde `.git`), `Api.read_file` (kind `md` / `text` / `image` / `doc` convertido via `convert.to_markdown` / `binary`), `Api.open_file` (programa padrão ou VS Code). `_inside` impede sair da pasta da conversa.
 - Atualiza sozinho no fim de cada turno (`refreshFiles`). Painel estreito (<560 px): árvore e visualizador se alternam (`.compact`).
 
+## Mudanças (git), avisos, fila, busca e exportação
+
+- **Mudanças** (`#changes-modal`, Ctrl+G): `Api.git_changes/git_diff/git_stage/git_revert` → `gitdiff`. Mostra o que difere do `HEAD` dentro da pasta da conversa (que pode ser subpasta do repositório; caminhos relativos à raiz do repo). "Revisado" = `git add`. Reverter: `git restore --source=HEAD --staged --worktree` (renomeado: restaura o antigo e tira o novo); arquivo sem commit sai do índice e do projeto. Sempre há cópia em `<dados>/revertidos/<data>/<repo>/`. Única ação do app que escreve na pasta do projeto, e só com confirmação.
+- **Avisos**: o JS decide (janela sem foco → `Api.notify`; com foco e outra conversa → toast). Fim de turno espera 1,5 s (a fila pode mandar a próxima) e não avisa se o usuário parou. Clicar no aviso emite `focus_conv`. Pref `notify`. O ícone da bandeja só aparece durante o aviso e é descartado ao fechar.
+- **Fila**: `conversation.queue` no `state.json` (`Store.queue_push/pop/remove`). `Session.next_in_queue()` roda quando a sessão fica ociosa (`session_state_changed` idle ou `ResultMessage`), antes de `_maybe_compact`; emite `queue` e `queued_sent` e chama `submit` com `entry.queued=True` (não conta como "no meio do turno"). `queue_hold` pausa a fila quando o usuário para o turno ou o turno dá erro; volta ao mandar uma mensagem ou em `Api.queue_resume`. Só texto (sem anexos nem `!`); o contexto do `!` não vai junto.
+- **Busca no conteúdo**: `Store.search` lê os `.jsonl` (filtro barato na linha antes do `json.loads`), até 3 resultados por conversa e 60 no total. Os nós do histórico têm `data-idx` (índice da linha no `.jsonl`); o clique carrega páginas anteriores até achar.
+- **Exportar**: `Api.export_markdown` + `Api.save_export` (diálogo "Salvar", começa em Downloads).
+
 ## Comandos de tela do terminal
 
 - `/login`, `/logout`, `/usage`, `/cost`, `/status`, `/clear`, `/new`, `/resume`, `/permissions`, `/model`, `/terminal`, `/config`, `/mcp` são interceptados por `LOCAL_COMMANDS` (app.js) e abrem o recurso equivalente do app. O `/mcp` usa `Api.mcp_servers`/`mcp_action` → `Session.mcp_servers`/`mcp_action`: `get_mcp_status`, `reconnect_mcp_server` e `toggle_mcp_server` do SDK e, para o login OAuth, o pedido de controle `mcp_authenticate` enviado por `client._query._send_control_request` (API interna do SDK, não documentada: reconferir ao atualizar o `claude-agent-sdk`). O CLI sobe o servidor local que recebe o retorno do login; o app só abre a `authUrl` e consulta o estado a cada 3 s.
@@ -104,7 +117,7 @@ Rory Assistant = janela pywebview (HTML/JS) + backend Python que usa o **Claude 
 - Barra lateral fixa ≥ 760 px; abaixo vira gaveta (☰ / Ctrl+B).
 - Instância única (mutex `Local\RoryAssistant-<hash da pasta de dados>`).
 - Todo markdown passa pelo **DOMPurify** (a janela tem acesso à API Python). Links abrem no navegador (`api.open_url`).
-- `setting_sources` padrão carrega `~/.claude` e CLAUDE.md/.mcp.json do projeto. O app **não escreve nada na pasta do projeto**.
+- `setting_sources` padrão carrega `~/.claude` e CLAUDE.md/.mcp.json do projeto. O app **não escreve nada na pasta do projeto** (exceção: "Reverter" do painel Mudanças, com confirmação e cópia em `revertidos/`).
 
 ## Revisão técnica (lotes 0–5)
 - **Plano (`ExitPlanMode`)**: hook `PreToolUse` força a pergunta em qualquer modo; evento `plan` com o texto inteiro; respostas `accept_edits`/`default`/`deny`+mensagem; ao aprovar, grava o modo e emite `mode_changed`. Sem "sempre permitir".

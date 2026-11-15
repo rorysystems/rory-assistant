@@ -8,11 +8,14 @@ cd V:\projetos\rory-assistant
 .\.venv\Scripts\python.exe scripts\check_js.py    # sintaxe do ui/*.js (obrigatório depois de mexer no JS)
 .\.venv\Scripts\python.exe scripts\smoke_agent.py # backend sem janela (custa uma chamada)
 powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1   # instalador -> dist\installer
+.\.venv\Scripts\python.exe -m pytest -q          # testes de lógica (pasta de dados temporária; pip install -r requirements-dev.txt)
 ```
 
 - **`RORY_DATA_DIR=<pasta>`** usa outra pasta de dados (instância única é por pasta de dados): teste sem mexer nas conversas reais.
 - Testar a interface por script: `SendKeys` só chega ao WebView2 depois de um **clique de mouse** na página. Ache a janela de teste pelo PID, não pelo título.
 - Um erro de sintaxe no JS faz o app abrir "travado" (tela desenhada, nenhum botão funciona).
+- **Testes** (`tests/`): `Store` (histórico paginado, grupos, gravação adiada), funções puras do `agent`, `Api` (`_inside`, `safe_url`, limite de anexos) e `test_sdk_compat.py` (avisa se uma versão nova do SDK quebrar o que o app usa por baixo, como `_send_control_request` do login do MCP). O CI (`.github/workflows/tests.yml`) roda pytest, `check_js.py` e o import do app.
+- **Log**: `app.log` na pasta de dados (rotativo, 3 x 512 KB; Configurações → "Abrir pasta de logs"). Use `from .log import log`; `print` não aparece (pythonw sem console). Guarda o stderr do `claude`, falhas de conexão/modo/modelo e links recusados.
 
 ## Instaladores
 
@@ -22,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1   # instala
 
 ## Pegadinhas
 
-- **Smart App Control ligado neste PC**: bloqueia o .exe sem assinatura instalado no `C:`. No `V:` (Dev Drive) roda. Saídas: instalar no V: ou assinar o código. Com SAC desligado, só o aviso do SmartScreen.
+- **Smart App Control (SAC)**: com ele ligado, bloqueia o .exe sem assinatura instalado no `C:` (no `V:`, Dev Drive, roda). Saídas: instalar no V:, assinar o código ou desligar o SAC. Neste PC de desenvolvimento ele foi **desligado em 09/11/2026**; em outros PCs ainda vale. Sem SAC, só o aviso do SmartScreen.
 - **SAC também bloqueia `.pyd` novos do venv** (mesmo no V:): em 09/11/2026 bloqueou `_pydantic_core` 2.50.4 e o app não abria (`ImportError: DLL load failed ... política de Controle de Aplicativo`). Por isso `pydantic`/`pydantic-core` estão fixados no `requirements.txt`. Antes de subir versão, testar `python -c "import app.main"`. Bloqueios aparecem em `Get-WinEvent -LogName 'Microsoft-Windows-CodeIntegrity/Operational'`.
 - **WinForms/WebView2 só na thread da janela**: todo acesso vai dentro de `form.BeginInvoke(Action(...))`. Ler `CoreWebView2` numa thread de fundo causou deadlock no GIL (app travava ao abrir).
 - **Diagnóstico de travamento**: `.venv\Scripts\py-spy.exe dump --pid <pid do pythonw filho> --native`. Quedas gravam a pilha em `%APPDATA%\Rory Assistant\crash.log`.
@@ -36,15 +39,17 @@ powershell -ExecutionPolicy Bypass -File packaging\build-windows.ps1   # instala
 
 ## Estado
 
-- Testado no Windows (dev): chat, anexos, permissões, conversas por pasta, memória após reabrir, mídia, `!comando`. Instalador 0.1.0 testado pelo usuário antes das últimas mudanças.
+- Versão atual: ver `app/config.py` (`APP_VERSION`; mantenha igual em `packaging/installer.iss`). Testado no Windows (dev): chat, anexos, permissões, conversas por pasta, memória após reabrir, mídia, `!comando`. Os instaladores só foram testados pelo usuário até a 0.1.0.
 - **Não testado**: builds de macOS e Linux.
 
 ## Próximas etapas
 
 1. **Google / Microsoft** (agenda, e-mail) via servidores MCP (`mcp_servers` em `ClaudeAgentOptions`); falta uma tela de "Conexões".
 
-## Revisão técnica (lotes 0–5)
-Implementada, mas **sem teste visual**. Dependências fixadas em `requirements.txt` (`requirements.lock` é só `pip freeze`, sem hashes). CI passou para Python 3.14 (conferir wheels no macOS/Linux) e as actions estão pinadas por SHA. Testar na tela: card do plano, `/model`, menu de caminho, histórico paginado, `!ping -t` + parar.
+## Revisão técnica (lotes 0–5 e 6)
+Lote 6 (revisão de 15/11/2026, sem teste visual): testes + CI, limite de anexos (50 MB cada, 120 MB por mensagem), `state.json` gravado em bloco (`save_soon`/`flush`), histórico com índice de linhas, `app.log`, avisos (`notice`) quando mudar modo/modelo falha, confirmação de `!comandos` destrutivos, `open_url` só http(s) e CSP no `index.html` (**conferir na tela**: se algo parar de carregar, veja o DevTools com `RORY_DEBUG=1`). Lotes 0–5: implementados, mas **sem teste visual**. Dependências fixadas em `requirements.txt` (`requirements.lock` é só `pip freeze`, sem hashes). CI passou para Python 3.14 (conferir wheels no macOS/Linux) e as actions estão pinadas por SHA. Testar na tela: card do plano, `/model`, menu de caminho, histórico paginado, `!ping -t` + parar.
+
+Lote 7 (15/11/2026, testado pelo usuário na tela; versão 1.1.0): painel **Mudanças** (git), **avisos** do sistema, **fila** de mensagens (Ctrl+Enter), **busca no conteúdo** das conversas e **exportar** (.md/.html). Testar na tela: o aviso do Windows (balão do `NotifyIcon`; com a janela minimizada, clicar deve abrir a conversa), Ctrl+Enter com o Claude trabalhando, "Enviar fila" depois de parar, Reverter num arquivo de teste, busca com pulo para mensagem antiga e o diálogo de salvar.
 
 ## Instalação por comando (`install.ps1` / `install.sh`)
 
@@ -55,8 +60,6 @@ Alternativa aos instaladores (que não são assinados): o app roda do código-fo
 - **Idempotente**: rodar de novo troca só `src/` e sincroniza o venv (~4 s sem novidades). Se o app estiver aberto (processo dentro do destino), recusa com mensagem clara (no Windows o `.pyd` em uso não pode ser trocado).
 - **Variáveis de teste**: `RORY_DEST`, `RORY_LOCAL_SRC` (usa uma pasta local em vez de baixar), `RORY_NO_SHORTCUTS=1`, `RORY_REF`, `RORY_PYTHON`, `RORY_UNINSTALL=1`/`RORY_PURGE` (ps1) ou `--uninstall --purge/--keep-data` (sh). Use sempre com `RORY_DATA_DIR=<temp>`.
 - **Testar no Windows**: `$env:RORY_DEST="$env:TEMP\rt"; $env:RORY_LOCAL_SRC='V:\projetos\rory-assistant'; $env:RORY_NO_SHORTCUTS=1; Get-Content -Raw -Encoding UTF8 install.ps1 | iex`. O `install.sh` dá para checar no Git Bash com um `uname` e um `uv` falsos no PATH (`dash install.sh`), mas só macOS/Linux de verdade validam o restante.
-t"; $env:RORY_LOCAL_SRC='V:\projetos
-ory-assistant'; $env:RORY_NO_SHORTCUTS=1; Get-Content -Raw -Encoding UTF8 install.ps1 | iex`. O `install.sh` dá para checar no Git Bash com um `uname` e um `uv` falsos no PATH (`dash install.sh`), mas só macOS/Linux de verdade validam o restante.
 - **Pegadinhas**:
   - `install.ps1` tem de ser **UTF-8 sem BOM** (com BOM, o `irm | iex` do PS 5.1 quebra na primeira linha); localmente leia com `-Encoding UTF8`. Sem `exit`: o `iex` roda na sessão do usuário. Sem `&&`/`??`.
   - Parâmetros não existem em `irm | iex`; por isso as opções são variáveis de ambiente (ps1) e `sh -s -- --opção` (sh).

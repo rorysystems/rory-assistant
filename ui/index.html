@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>Rory Assistant</title>
   <link rel="stylesheet" href="vendor/hl-dark.min.css" id="hl-theme" />
   <link rel="stylesheet" href="style.css" />
@@ -72,6 +73,9 @@
           <div class="ctx"><span id="ctx-label">contexto</span><div class="ctx-bar"><i id="ctx-fill"></i></div></div>
           <div class="tot" id="tot-label"></div>
         </div>
+        <button class="icon-btn" id="btn-changes" title="Mudanças no git da pasta (Ctrl+G)" aria-label="Mudanças no git da pasta (Ctrl+G)">
+          <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="8" r="2.2"/><path d="M6 8.2v7.6M18 10.2c0 4-6 3-11 6"/></svg><span>Mudanças</span>
+        </button>
         <button class="icon-btn" id="btn-docs" title="Arquivos da pasta (Ctrl+E)" aria-label="Arquivos da pasta (Ctrl+E)">
           <svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg><span>Arquivos</span>
         </button>
@@ -87,6 +91,8 @@
             <button data-action="folder">Abrir pasta</button>
             <button data-action="terminal">Continuar no terminal</button>
             <button data-action="convert">Converter arquivo para .md</button>
+            <button data-action="export-md">Exportar conversa (.md)</button>
+            <button data-action="export-html">Exportar conversa (.html)</button>
             <button data-action="health">Configurações</button>
             <hr />
             <button data-action="delete" class="danger">Apagar conversa</button>
@@ -128,6 +134,7 @@
               <button class="btn primary" id="btn-login">Entrar na conta</button>
               <button class="btn" id="btn-logout">Sair da conta</button>
               <button class="btn" id="btn-recheck">Verificar de novo</button>
+              <button class="btn" id="btn-logs" title="Mostra o app.log (diagnóstico) na pasta de dados">Abrir pasta de logs</button>
             </div>
             <p class="set-hint" id="login-hint" hidden>Uma janela de terminal abriu para o login (o navegador também deve abrir). Conclua lá; esta tela atualiza sozinha.</p>
           </section>
@@ -226,6 +233,14 @@
           </section>
 
           <section class="set-group">
+            <h3>Avisos</h3>
+            <div class="pref-row">
+              <label for="pref-notify">Avisar no sistema (com som e a barra de tarefas piscando) quando uma conversa terminar ou pedir permissão com a janela em segundo plano</label>
+              <input type="checkbox" id="pref-notify" data-pref="notify" />
+            </div>
+          </section>
+
+          <section class="set-group">
             <h3>Sobre</h3>
             <p class="set-hint" id="about-line"></p>
             <p class="set-hint">Site: <a href="https://www.rorysystems.com">www.rorysystems.com</a></p>
@@ -238,6 +253,7 @@
           <span>⏸</span><span class="wt"></span>
           <button class="btn" id="btn-wait-go">Ver pedido</button>
         </div>
+        <div class="queue-bar" id="queue-bar" hidden></div>
         <div class="shell-chip" id="shell-chip" hidden></div>
         <div class="chips" id="chips"></div>
         <div class="slash" id="slash" hidden></div>
@@ -340,6 +356,31 @@
         <div class="modal-actions">
           <button class="btn" id="btn-mcp-refresh">Atualizar</button>
           <button class="btn primary" id="btn-mcp-close">Fechar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Painel: mudanças no git da pasta da conversa -->
+    <div class="modal-wrap" id="changes-modal" hidden>
+      <div class="modal changes" role="dialog" aria-labelledby="changes-title">
+        <div class="changes-head">
+          <h2 id="changes-title">Mudanças</h2>
+          <span class="changes-branch" id="changes-branch"></span>
+          <button class="btn small" id="btn-changes-refresh">Atualizar</button>
+          <button class="icon-btn" id="btn-changes-close" title="Fechar (Esc)" aria-label="Fechar (Esc)">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div class="changes-body">
+          <nav class="changes-list" id="changes-list"></nav>
+          <div class="changes-view">
+            <div class="changes-bar" id="changes-bar" hidden>
+              <span class="cb-name" id="cb-name"></span>
+              <button class="btn small" id="cb-stage" title="Marca como revisado (git add)">Revisado</button>
+              <button class="btn small danger" id="cb-revert" title="Volta o arquivo ao último commit (uma cópia do atual fica na pasta de dados)">Reverter</button>
+            </div>
+            <pre class="diff" id="changes-diff"><span class="hint">Escolha um arquivo.</span></pre>
+          </div>
         </div>
       </div>
     </div>

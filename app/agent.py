@@ -57,6 +57,7 @@ from claude_agent_sdk.types import (
 )
 
 from . import config
+from .log import log
 from .store import Store, now_iso
 
 Emit = Callable[[dict[str, Any]], None]
@@ -254,6 +255,7 @@ class Session:
         self.measure_floor = False  # a próxima resposta mede o piso (logo depois de compactar)
         self.compacting = False
         self.compact_tried = False  # uma tentativa por mensagem do usuário
+        self.stop_requested = False  # o usuário pediu para parar o turno atual
         self.held: list[tuple[Any, dict[str, Any]]] = []  # mensagens esperando a compactação
         self.stale = False  # configuração mudou: reconecta (retoma) na próxima mensagem
         self.sig: tuple[Any, ...] = ()  # opções com que o cliente atual foi aberto
@@ -261,6 +263,8 @@ class Session:
         self.last_active = time.monotonic()
         self.perm_messages: dict[str, str] = {}  # texto digitado ao negar um plano
         self.mode_set_at = 0.0  # quando o app mudou o modo (ignora relatos atrasados do CLI)
+        # fila: pausa quando o usuário para o turno ou o turno dá erro (volta ao mandar algo)
+        self.queue_hold = False
 
     @property
     def project(self) -> dict[str, Any]:
@@ -394,8 +398,9 @@ class Session:
         if self.client is not None:
             try:
                 await self.client.set_permission_mode(mode)  # type: ignore[arg-type]
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("set_permission_mode(%s) falhou: %s", mode, exc)
+                self.emit(type="notice", text="Não consegui aplicar o modo de permissão agora; vale na próxima conexão.")
 
     def _follow_cli_mode(self, mode: Any) -> None:
         """O CLI informou o modo real (ex.: saiu do plano sozinho): a tela segue."""
@@ -422,7 +427,7 @@ class Session:
 
     def _signature(self) -> tuple[Any, ...]:
         """O que vale só ao (re)conectar; se mudar, a sessão fica desatualizada."""
-        prefs = self.hub.store.state.get("prefs") or {}
+        prefs = self.hub.store.prefs()
         return (
             self._main_model(),
             bool(prefs.get("use_subagents", True)),
@@ -455,7 +460,7 @@ class Session:
 
     def _options(self) -> ClaudeAgentOptions:
         project = self.project
-        prefs = self.hub.store.state.get("prefs") or {}
+        prefs = self.hub.store.prefs()
         extra: dict[str, Any] = {}
         if prefs.get("use_subagents", True):
             extra["agents"] = self._agents(self._sub_model(prefs))
@@ -473,13 +478,13 @@ class Session:
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": build_guide(self.hub.store.state.get("prefs") or {}),
+                "append": build_guide(self.hub.store.prefs()),
             },
             cli_path=self.hub.cli_path,
             model=self._main_model(),
             add_dirs=[str(config.ATTACH_DIR)],  # anexos grandes: o Read não pede permissão
             hooks={"PreToolUse": [HookMatcher(matcher="ExitPlanMode", hooks=[self._force_ask])]},
-            stderr=lambda line: print(f"[claude] {line}"),
+            stderr=lambda line: log.info("[claude] %s", line),
             env=self._env(),
             # o padrão do SDK é 1 MB por mensagem JSON; um Read de imagem/PDF grande
             # (vem em base64) passa disso e derruba a sessão com CLIJSONDecodeError
@@ -491,7 +496,7 @@ class Session:
         # session_state_changed (running/idle) chega até nós: é o que diz se o
         # Claude ainda está trabalhando depois de uma mensagem mandada no meio
         env = {"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS": "1"}
-        prefs = self.hub.store.state.get("prefs") or {}
+        prefs = self.hub.store.prefs()
         limit = compact_limit(prefs)
         if limit:
             # garantia: o próprio Claude Code compacta no meio de uma tarefa longa que
@@ -517,6 +522,7 @@ class Session:
             try:
                 await client.connect()
             except Exception as exc:  # noqa: BLE001
+                log.error("conexão com o Claude falhou: %s: %s", type(exc).__name__, exc)
                 await _quiet_disconnect(client)
                 # só uma sessão realmente sumida (apagada/expirada) recomeça do zero;
                 # timeout, MCP lento ou CLI ausente mantêm o session_id (a memória da conversa)
@@ -526,7 +532,8 @@ class Session:
                 client = ClaudeSDKClient(options=self._options())
                 try:
                     await client.connect()
-                except Exception:
+                except Exception as exc2:  # noqa: BLE001
+                    log.error("reconexão sem sessão falhou: %s", exc2)
                     await _quiet_disconnect(client)
                     raise
             self.client = client
@@ -538,8 +545,8 @@ class Session:
             try:
                 info = await client.get_server_info() or {}
                 self._add_commands(info.get("commands") or [])
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("get_server_info falhou: %s", exc)
         return self.client
 
     def _add_commands(self, items: list[Any], kind: str = "comando") -> None:
@@ -600,10 +607,16 @@ class Session:
         elif action in ("enable", "disable"):
             await client.toggle_mcp_server(name, action == "enable")
         elif action == "auth":
+            # API privada do SDK (não há método público para o login do MCP): se uma versão
+            # nova do SDK mudar isso, o erro sai legível (tests/test_sdk_compat.py avisa antes)
             query = getattr(client, "_query", None)
-            if query is None:
-                raise RuntimeError("A conexão com o Claude Code não está pronta.")
-            reply = await query._send_control_request({"subtype": "mcp_authenticate", "serverName": name})
+            send = getattr(query, "_send_control_request", None)
+            if send is None:
+                raise RuntimeError(
+                    "Esta versão do Claude Agent SDK não permite autenticar MCP pelo app. "
+                    "Use o terminal (/mcp) ou atualize o Rory Assistant."
+                )
+            reply = await send({"subtype": "mcp_authenticate", "serverName": name})
             reply = reply or {}
             return {"auth_url": str(reply.get("authUrl") or ""), "waiting": bool(reply.get("callbackExpected"))}
         else:
@@ -619,8 +632,8 @@ class Session:
             client, self.client = self.client, None
             try:
                 await client.disconnect()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("disconnect falhou: %s", exc)
 
     # --- envio ----------------------------------------------------------------
     async def submit(self, blocks: list[dict[str, Any]], entry: dict[str, Any]) -> str:
@@ -628,7 +641,10 @@ class Session:
         absorve a mensagem no turno em andamento ou responde logo em seguida.
 
         Devolve 'sent', 'mid_turn' (chegou com o Claude trabalhando) ou 'error'."""
-        mid_turn = self.busy
+        # da fila: a conversa já foi marcada ocupada em next_in_queue, mas não é "no meio"
+        mid_turn = self.busy and not entry.get("queued")
+        if not entry.get("queued"):
+            self.queue_hold = False  # mensagem do usuário: a fila volta a andar depois dela
         if mid_turn and self.turn_open and self.parts:
             # o que já foi respondido fica antes da mensagem nova no histórico
             self._write_assistant(self.parts, None, None)
@@ -680,7 +696,7 @@ class Session:
         """Logo depois de uma resposta (cache quente: reler sai ~10% do preço), se o
         contexto passou do limite, manda /compact sem aparecer na conversa. Compactar só
         ao reabrir sairia caro: com o cache frio, o Claude relê tudo pelo preço cheio."""
-        limit = compact_limit(self.hub.store.state.get("prefs") or {})
+        limit = compact_limit(self.hub.store.prefs())
         if (
             not limit
             or self.compacting
@@ -703,7 +719,8 @@ class Session:
             try:
                 assert self.client is not None
                 await self.client.query(message())
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                log.warning("compactação em segundo plano falhou: %s", exc)
                 self._end_compact()
 
         asyncio.get_running_loop().create_task(run())
@@ -749,6 +766,8 @@ class Session:
         if not any(p["type"] == "text" for p in self.parts) and result_text and not error:
             self._add_text(result_text, emit=False)
         self._write_assistant(self.parts, cost, error)
+        if error:
+            self.queue_hold = True  # não dispara o resto da fila em cima de um erro
         self.emit(type="done", parts=self.parts, cost=cost, error=error)
         self.turn_open = False
         self.parts = []
@@ -873,18 +892,26 @@ class Session:
                 # quando uma mensagem mandada no meio gera mais um turno
                 self.state_events = True
                 self._set_busy(data.get("state") != "idle")
-                if data.get("state") == "idle":
+                if data.get("state") == "idle" and not self.next_in_queue():
                     self._maybe_compact()
         elif isinstance(msg, ResultMessage):
             self.hub.store.update(self.project_id, session_id=msg.session_id)
             error = None
-            if msg.is_error and msg.terminal_reason not in ("aborted_streaming", "aborted_tools"):
+            aborted = msg.terminal_reason in ("aborted_streaming", "aborted_tools")
+            if msg.is_error and not aborted:
                 error = "; ".join(msg.errors or []) or msg.result or "Erro no Claude Code"
+            elif aborted and not self.stop_requested:
+                # o Claude Code cancelou o turno sem o usuário pedir: avisa, senão a mensagem some em silêncio
+                error = "O Claude Code interrompeu o turno sozinho. Se a sua última mensagem não foi respondida, envie de novo."
+            self.stop_requested = False
             self._ensure_turn()
             self._finish_turn(msg.total_cost_usd, error, msg.result or "")
             if not self.state_events:
                 self._set_busy(False)  # Claude Code antigo, sem eventos de estado
-                self._maybe_compact()
+                if not self.next_in_queue():
+                    self._maybe_compact()
+            elif not self.busy:
+                self.next_in_queue()  # o "idle" chegou antes do resultado
 
     def _add_text(self, text: str, emit: bool = True) -> None:
         if self.parts and self.parts[-1]["type"] == "text":
@@ -908,15 +935,41 @@ class Session:
                 # novo bloco de texto depois de outro: separa com parágrafo
                 self._add_text("\n\n")
 
+    def next_in_queue(self) -> bool:
+        """Turno terminou: manda a próxima mensagem da fila (se houver e não estiver pausada).
+        Roda no loop do agente."""
+        if self.busy or self.turn_open or self.compacting or self.held or self.queue_hold or self.closing:
+            return False
+        item = self.hub.store.queue_pop(self.project_id)
+        if not item:
+            return False
+        entry = {"role": "user", "text": item["text"], "attachments": [], "time": now_iso(), "queued": True}
+        self.emit(type="queue", queue=self.hub.store.queue(self.project_id), hold=False)
+        self.emit(type="queued_sent", entry=entry)
+        self._set_busy(True)  # já ocupada: nada de compactar entre uma e outra
+
+        async def run() -> None:
+            try:
+                await self.submit([{"type": "text", "text": item["text"]}], entry)
+            except Exception as exc:  # noqa: BLE001
+                self.turn_open = True
+                self._finish_turn(None, f"{type(exc).__name__}: {exc}", "")
+                self._set_busy(False)
+
+        asyncio.get_running_loop().create_task(run())
+        return True
+
     async def interrupt(self) -> None:
+        self.queue_hold = True  # parou: o resto da fila espera
+        self.stop_requested = True
         for future in self.permissions.values():
             if not future.done():
                 future.set_result("deny")
         if self.client is not None and self.busy:
             try:
                 await self.client.interrupt()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("interrupt falhou: %s", exc)
 
     async def set_model(self, model: str | None) -> None:
         self.hub.store.update(self.project_id, model=model)
@@ -924,8 +977,9 @@ class Session:
         if self.client is not None:
             try:
                 await self.client.set_model(model)  # vale já para a resposta em andamento
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("set_model(%s) falhou: %s", model, exc)
+                self.emit(type="notice", text="O modelo novo só vale a partir da próxima mensagem (reconectando).")
 
     async def set_permission_mode(self, mode: str) -> None:
         self.mode_set_at = time.monotonic()
@@ -933,8 +987,11 @@ class Session:
         if self.client is not None:
             try:
                 await self.client.set_permission_mode(mode)  # type: ignore[arg-type]
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                log.warning("set_permission_mode(%s) falhou, reconectando: %s", mode, exc)
+                self.stale = True
                 await self.disconnect()
+                self.emit(type="notice", text="Modo de permissão aplicado ao reconectar o Claude.")
 
 
 class AgentHub:
@@ -1015,6 +1072,17 @@ class AgentHub:
 
     def mcp_action(self, project_id: str, name: str, action: str) -> dict[str, Any]:
         return self._run(self.session(project_id).mcp_action(name, action)).result(timeout=90)
+
+    def kick_queue(self, project_id: str, resume: bool = False) -> None:
+        """Fila mudou (ou o usuário mandou retomar): se a conversa está parada, manda já."""
+        session = self.session(project_id)
+
+        def run() -> None:
+            if resume:
+                session.queue_hold = False
+            session.next_in_queue()
+
+        self.loop.call_soon_threadsafe(run)
 
     def interrupt(self, project_id: str) -> None:
         self._run(self.session(project_id).interrupt())
